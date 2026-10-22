@@ -40,7 +40,7 @@ def _quick_signature(raw_item: dict) -> str:
 def _sync_one_org(session: Session, org_id: str, org_name: str, details: list[dict]) -> dict:
     """Syncs catalog items for a single org. Returns per-org counters."""
     added = removed = changed = unchanged = 0
-    raw_items = vcf_client.list_catalog_items(org_id)
+    raw_items = vcf_client.list_catalog_items(org_name)
     seen_vcf_ids: set[str] = set()
 
     for raw in raw_items:
@@ -68,7 +68,7 @@ def _sync_one_org(session: Session, org_id: str, org_name: str, details: list[di
 
         if needs_schema_refresh:
             try:
-                schema = vcf_client.get_item_request_schema(org_id, vcf_id)
+                schema = vcf_client.get_item_request_schema(org_name, vcf_id)
             except VcfAutomationError as exc:
                 logger.warning("Schema fetch failed (org=%s, item=%s/%s): %s", org_id, vcf_id, name, exc)
                 schema = existing.form_schema if existing else {}

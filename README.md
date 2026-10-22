@@ -85,17 +85,32 @@ npm run dev   # http://localhost:5173, /api 요청은 8000번 백엔드로 프�
 | 변수 | 설명 |
 |---|---|
 | `VCF_AUTOMATION_BASE_URL` | VCF Automation FQDN |
-| `VCF_AUTOMATION_USERNAME` / `PASSWORD` / `DOMAIN` | provider 레벨 서비스 계정 |
-| `VCF_AUTOMATION_REFRESH_TOKEN` | API Token(Refresh Token) 방식을 쓰는 경우 |
+| `VCF_AUTOMATION_USERNAME` / `PASSWORD` | provider 계정 (org 목록 조회용) |
+| `VCF_ORG_TOKENS` | org별 API 토큰 JSON 맵 (한 줄), 동기화 대상 org 허용 목록 겸용 |
 | `SYNC_INTERVAL_MINUTES` | 자동 sync 주기(분), 기본 60 |
 | `DATABASE_URL` | Docker는 `sqlite:////app/data/vcf_portal.db`, 로컬은 `sqlite:///./vcf_portal.db` |
 
-## API 경로가 환경마다 다를 때
+## VCF 9 인증 구조와 연결 점검
 
-`backend/app/vcf_client.py` 상단의 `ORGS_PATH`, `ORG_CONTEXT_HEADER`,
-`CATALOG_ITEMS_PATH` 등은 VCF 9 Automation 버전/구성에 따라 다를 수 있는 값입니다.
-파일 맨 위 docstring에 실제 값을 확인하는 방법(VCFA UI에서 provider→org 전환 시
-devtools Network 탭 캡처)을 적어뒀습니다.
+VCF 9 Automation은 provider 플레인과 org 플레인의 인증이 분리되어 있습니다.
+
+| 용도 | 호출 |
+|---|---|
+| provider 로그인 | `POST /cloudapi/1.0.0/sessions/provider` (Basic `user@system:password`, 토큰은 응답 헤더 `x-vmware-vcloud-access-token`) |
+| org 목록 | `GET /cloudapi/1.0.0/orgs` (Bearer) |
+| org 토큰 | `POST /tm/oauth/tenant/<org명>/token` (`grant_type=refresh_token`, org의 API 토큰) |
+| 카탈로그/배포 | `/catalog/api/...`, `/iaas/api/...` (Bearer = org 토큰) |
+
+org 토큰은 org별 API 토큰으로 발급받으므로 `VCF_ORG_TOKENS`에 org 이름별로 등록합니다.
+`/catalog/api/items`의 정확한 하위 경로는 공개 문서에서 확인하지 못해, 아래로 직접 점검하는 것을 권장합니다.
+
+```bash
+H=https://<vcfa-fqdn>
+TOKEN=$(curl -sk -X POST $H/tm/oauth/tenant/<org명>/token \
+  -H 'Content-Type: application/x-www-form-urlencoded' \
+  -d 'grant_type=refresh_token&refresh_token=<org API 토큰>' | python3 -c 'import sys,json;print(json.load(sys.stdin)["access_token"])')
+curl -sk -H "Authorization: Bearer $TOKEN" "$H/catalog/api/items?page=0&size=5"
+```
 
 ## 관리자 sync 흐름
 

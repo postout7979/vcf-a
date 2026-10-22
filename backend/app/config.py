@@ -7,7 +7,12 @@ class Settings(BaseSettings):
     vcf_automation_base_url: str = "https://vcfa.example.local"
     vcf_automation_username: str = ""
     vcf_automation_password: str = ""
-    vcf_automation_domain: str = "System Domain"
+    # Provider plane: user@<provider org> + password, or a provider API token
+    vcf_provider_org_name: str = "system"
+    vcf_provider_refresh_token: str = ""
+    # Org plane: per-org API (refresh) tokens as JSON {"org-name": "token"},
+    # and an optional default token used for orgs not listed in the map.
+    vcf_org_tokens: str = ""
     vcf_automation_refresh_token: str = ""
     vcf_automation_project_id: str = ""
     vcf_verify_tls: bool = True

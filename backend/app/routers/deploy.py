@@ -42,7 +42,7 @@ def submit_deployment(
 
     try:
         result = vcf_client.submit_request(
-            org_id=org_id,
+            org_name=item.org_name,
             item_id=vcf_item_id,
             deployment_name=body.deploymentName,
             inputs=body.inputs,
