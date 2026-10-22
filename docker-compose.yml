@@ -1,0 +1,25 @@
+services:
+  backend:
+    build: ./backend
+    env_file:
+      - ./backend/.env
+    environment:
+      # Overridable, but defaults to the mounted volume below so the
+      # catalog cache / deployment history survive container restarts.
+      DATABASE_URL: sqlite:////app/data/vcf_portal.db
+    volumes:
+      - vcf_portal_data:/app/data
+    ports:
+      - "8000:8000"
+    restart: unless-stopped
+
+  frontend:
+    build: ./frontend
+    depends_on:
+      - backend
+    ports:
+      - "8080:80"
+    restart: unless-stopped
+
+volumes:
+  vcf_portal_data:
