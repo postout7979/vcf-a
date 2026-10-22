@@ -14,6 +14,8 @@ class Settings(BaseSettings):
     # and an optional default token used for orgs not listed in the map.
     vcf_org_tokens: str = ""
     # Optional: comma-separated org names to sync (default: every org the provider sees)
+    # Prefix in front of /apis for the All Apps (CCI) API. "auto" = detect.
+    vcf_cci_base_path: str = "auto"
     vcf_org_allowlist: str = ""
     # Optional: override the OIDC relying party clientId used for provider->org exchange
     vcf_relying_party_client_id: str = ""

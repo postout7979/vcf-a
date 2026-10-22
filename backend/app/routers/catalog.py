@@ -18,10 +18,12 @@ def list_orgs(session: Session = Depends(get_session)):
 
 
 @router.get("/catalog")
-def list_catalog(org_id: str | None = Query(default=None), session: Session = Depends(get_session)):
+def list_catalog(org_id: str | None = Query(default=None), project: str | None = Query(default=None), session: Session = Depends(get_session)):
     stmt = select(CatalogItem).where(CatalogItem.is_active == True)  # noqa: E712
     if org_id:
         stmt = stmt.where(CatalogItem.org_id == org_id)
+    if project:
+        stmt = stmt.where(CatalogItem.project_id == project)
     items = session.exec(stmt.order_by(CatalogItem.org_name, CatalogItem.name)).all()
     return [
         {
@@ -42,7 +44,7 @@ def list_catalog(org_id: str | None = Query(default=None), session: Session = De
     ]
 
 
-@router.get("/catalog/{org_id}/{vcf_item_id}")
+@router.get("/catalog/{org_id}/{vcf_item_id:path}")
 def get_catalog_item(org_id: str, vcf_item_id: str, session: Session = Depends(get_session)):
     item = session.exec(
         select(CatalogItem).where(

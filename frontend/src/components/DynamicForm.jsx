@@ -28,6 +28,7 @@ function fieldKind(key, prop) {
   if (prop.enum || prop.oneOf) return "select";
   if (prop["$dynamicEnum"] || prop.dynamicEnum) return "dynamic-enum";
   if (prop.type === "boolean") return "checkbox";
+  if (prop.type === "array") return "array";
   if (prop.type === "integer" || prop.type === "number") return "number";
   if (
     prop.type === "string" &&
@@ -129,11 +130,27 @@ export default function DynamicForm({ schema, values, onChange }) {
                   />
                 )}
 
+                {kind === "array" && (
+                  <input
+                    type="text"
+                    value={Array.isArray(value) ? value.join(", ") : value}
+                    placeholder="쉼표(,)로 구분해서 입력"
+                    onChange={(e) =>
+                      setValue(
+                        key,
+                        e.target.value.split(",").map((v) => v.trim())
+                      )
+                    }
+                  />
+                )}
+
                 {kind === "number" && (
                   <input
                     type="number"
                     value={value}
-                    onChange={(e) => setValue(key, e.target.valueAsNumber)}
+                    onChange={(e) =>
+                      setValue(key, Number.isNaN(e.target.valueAsNumber) ? "" : e.target.valueAsNumber)
+                    }
                   />
                 )}
 

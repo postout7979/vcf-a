@@ -19,6 +19,7 @@ def dashboard_summary(session: Session = Depends(get_session)):
 
     by_type = Counter(c.type or "unspecified" for c in catalog_items)
     by_org = Counter(c.org_name or c.org_id for c in catalog_items)
+    by_project = Counter(c.project_id or "unassigned" for c in catalog_items)
 
     by_catalog_item = Counter(d.catalog_item_name for d in deployments)
     top_deployed = [{"name": name, "count": count} for name, count in by_catalog_item.most_common(8)]
@@ -36,7 +37,10 @@ def dashboard_summary(session: Session = Depends(get_session)):
             daily_counts[day] += 1
 
     total_deployments = len(deployments)
-    success_count = by_status.get("submitted", 0)
+    failed = sum(
+        n for s, n in by_status.items() if "fail" in s.lower() or "error" in s.lower()
+    )
+    success_count = total_deployments - failed
     success_rate = round((success_count / total_deployments) * 100, 1) if total_deployments else None
 
     return {
@@ -44,6 +48,7 @@ def dashboard_summary(session: Session = Depends(get_session)):
         "totalDeployments": total_deployments,
         "successRate": success_rate,
         "catalogByType": [{"type": t, "count": c} for t, c in by_type.items()],
+        "catalogByProject": [{"project": p, "count": c} for p, c in by_project.items()],
         "catalogByOrg": [{"org": o, "count": c} for o, c in by_org.items()],
         "topDeployedItems": top_deployed,
         "deploymentsByStatus": [{"status": s, "count": c} for s, c in by_status.items()],

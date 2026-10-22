@@ -1,6 +1,6 @@
 # VCF Cloud Management Portal
 
-VCF 9 Automation의 **VM Apps 모드 카탈로그**를 REST API로 조회 → 로컬 DB에 캐싱 →
+VCF 9 Automation의 **All Apps 모드 카탈로그**(CCI Kubernetes-style API)를 REST API로 조회 → 로컬 DB에 캐싱 →
 카탈로그와 **동일한 입력 스키마**로 배포 요청을 대행하는 셀프서비스 포탈입니다.
 
 VCF 9 Automation의 **Provider / Organization 분리**를 반영해서, provider 레벨로
@@ -87,6 +87,7 @@ npm run dev   # http://localhost:5173, /api 요청은 8000번 백엔드로 프�
 | `VCF_AUTOMATION_BASE_URL` | VCF Automation FQDN |
 | `VCF_AUTOMATION_USERNAME` / `PASSWORD` | provider 계정 (org 목록 조회용) |
 | `VCF_ORG_ALLOWLIST` | 동기화할 org 이름(쉼표 구분), 비우면 전체 |
+| `VCF_CCI_BASE_PATH` | CCI API 접두사. `auto`(기본) 또는 `/cci/kubernetes` 등 |
 | `VCF_ORG_TOKENS` | (선택) org별 API 토큰 JSON 맵, 한 줄 |
 | `SYNC_INTERVAL_MINUTES` | 자동 sync 주기(분), 기본 60 |
 | `DATABASE_URL` | Docker는 `sqlite:////app/data/vcf_portal.db`, 로컬은 `sqlite:///./vcf_portal.db` |
@@ -101,28 +102,33 @@ VCF 9 Automation은 provider 플레인과 org 플레인의 인증이 분리되�
 | org 목록 | `GET /cloudapi/1.0.0/orgs` (Bearer) |
 | org 토큰 (기본) | provider 토큰으로 교환: `GET /cloudapi/1.0.0/openIdProvider/relyingParties`로 clientId 조회 → `POST /oidc/oauth2/token` (jwt-bearer, 헤더 `x-vmware-vcloud-tenant-context: <org id>`) |
 | org 토큰 (대안) | `POST /tm/oauth/tenant/<org명>/token` (org별 API 토큰, `VCF_ORG_TOKENS`에 있는 org만) |
-| 카탈로그/배포 | `/catalog/api/...`, `/iaas/api/...` (Bearer = org 토큰) |
+| 프로젝트 | `GET <prefix>/apis/project.cci.vmware.com/v1alpha2/projects` |
+| 카탈로그 | `GET <prefix>/apis/catalog.cci.vmware.com/v1alpha1/namespaces/<project>/catalogitems` (스키마는 `spec.schema`) |
+| 배포 | `POST .../namespaces/<project>/instances` (`spec.sourceRef{kind: CatalogItem, name}`, `spec.inputs`) |
+| 상태 | `GET .../instances/<name>` → `status.status` |
+
+`<prefix>`는 기본 자동 감지(`/cci/kubernetes` 또는 없음)이며 `VCF_CCI_BASE_PATH`로 고정할 수 있습니다.
+카탈로그 항목 id는 `<프로젝트>~<항목명>` 형식입니다. 기존 VM Apps 경로(`/catalog/api`, `/iaas/api`)는 더 이상 쓰지 않습니다.
 
 provider 관리자 계정만 있으면 org별 API 토큰 없이 org 토큰을 받을 수 있습니다. org별 API 토큰은 `VCF_ORG_TOKENS`에 넣은 org에만 대안으로 쓰이고, 동기화 대상을 제한하려면 `VCF_ORG_ALLOWLIST`를 씁니다.
-`/catalog/api/items`의 정확한 하위 경로는 공개 문서에서 확인하지 못해, 아래로 직접 점검하는 것을 권장합니다.
+All Apps 엔드포인트가 환경마다 다를 수 있어 진단 API를 제공합니다.
 
 ```bash
-H=https://<vcfa-fqdn>
-TOKEN=$(curl -sk -X POST $H/tm/oauth/tenant/<org명>/token \
-  -H 'Content-Type: application/x-www-form-urlencoded' \
-  -d 'grant_type=refresh_token&refresh_token=<org API 토큰>' | python3 -c 'import sys,json;print(json.load(sys.stdin)["access_token"])')
-curl -sk -H "Authorization: Bearer $TOKEN" "$H/catalog/api/items?page=0&size=5"
+curl -s "http://<서버>:8000/api/admin/diagnose?org=<org명>" | python3 -m json.tool
 ```
+
+org 토큰 발급 → API 접두사 탐색 → 프로젝트 → 카탈로그 조회를 단계별로 보여주므로, 실패 시 결과를 공유해 주세요.
 
 ## 관리자 sync 흐름
 
 - **자동:** 앱 기동 시 1회 + 이후 `SYNC_INTERVAL_MINUTES` 마다 백그라운드로 실행
 - **수동:** `관리자` 메뉴 → **"지금 동기화"** 버튼
+- Sync 이력은 최신순으로 표시됩니다.
+- 배포 상태는 배포 이력 화면 진입/`상태 새로고침` 시 Instance 상태로 갱신됩니다.
 - 매 sync는 provider 세션으로 Organization 목록을 먼저 조회하고, **각 org마다**
   카탈로그를 따로 동기화합니다. 더 이상 보이지 않는 org/항목은 soft-delete 처리됩니다.
 
 ## 다음 확장 포인트
 
 - `$dynamicEnum` 필드를 백엔드에서 vRO 액션 프록시로 실제 해석해 select로 렌더링
-- 배포 상태(진행률/성공/실패) 폴링 후 `DeploymentRecord`에 반영
 - OSS SaltStack Master 노드 배포용 카탈로그 블루프린트 추가

@@ -48,10 +48,15 @@ RELYING_PARTIES_PATH = "/cloudapi/1.0.0/openIdProvider/relyingParties"
 OIDC_TOKEN_PATH = "/oidc/oauth2/token"
 TENANT_CONTEXT_HEADER = "x-vmware-vcloud-tenant-context"
 
-CATALOG_ITEMS_PATH = "/catalog/api/items"
-CATALOG_ITEM_DETAIL_PATH = "/catalog/api/items/{item_id}"
-CATALOG_ITEM_FORM_PATH = "/catalog/api/items/{item_id}/forms/request"
-CATALOG_ITEM_REQUEST_PATH = "/catalog/api/items/{item_id}/request"
+# --- All Apps org: Kubernetes-style CCI API ---------------------------------
+# Resource groups (from the CCI API reference on developer.broadcom.com)
+CATALOG_GROUP = "apis/catalog.cci.vmware.com/v1alpha1"   # CatalogItem, Instance, ...
+PROJECT_GROUP = "apis/project.cci.vmware.com/v1alpha2"   # Project
+# The URL prefix in front of /apis is not stated in the public docs, so it is
+# auto-detected (see _cci_prefix) unless VCF_CCI_BASE_PATH is set.
+CCI_PREFIX_CANDIDATES = ["/cci/kubernetes", ""]
+# catalog item id in this app = "<project>~<catalog item name>"
+ITEM_ID_SEP = "~"
 
 CLOUDAPI_VERSION = "application/json;version=9.0.0"
 
@@ -85,6 +90,9 @@ class VcfAutomationClient:
         self._org_tokens: dict[str, tuple[str, float]] = {}
         self._org_ids: dict[str, str] = {}  # org name -> provider-side org id
         self._rp_client_id: Optional[str] = None
+        self._cci_prefixes: dict[str, str] = {}
+        self._cci_namespaced_cache: dict[tuple[str, str], bool] = {}
+        self._schema_cache: dict[tuple[str, str], dict] = {}
 
     def _client(self) -> httpx.Client:
         return httpx.Client(verify=self._verify, timeout=30.0)
@@ -325,50 +333,132 @@ class VcfAutomationClient:
         return resp
 
     # ------------------------------------------------------------------
-    # Catalog (org-scoped)  -- org_name is the tenant name used for the token
+    # All Apps catalog (CCI Kubernetes-style API, org-scoped bearer token)
     # ------------------------------------------------------------------
-    def list_catalog_items(self, org_name: str) -> list[dict[str, Any]]:
+    def _cci_prefix(self, org_name: str) -> str:
+        if settings.vcf_cci_base_path is not None and settings.vcf_cci_base_path != "auto":
+            return settings.vcf_cci_base_path.rstrip("/")
+        cached = self._cci_prefixes.get(org_name)
+        if cached is not None:
+            return cached
+        tried = []
+        for cand in CCI_PREFIX_CANDIDATES:
+            resp = self._request("GET", f"{cand}/{CATALOG_GROUP}", org_name=org_name)
+            tried.append(f"{cand or '(none)'} -> {resp.status_code}")
+            if resp.status_code == 200:
+                try:
+                    if resp.json().get("kind") == "APIResourceList":
+                        self._cci_prefixes[org_name] = cand
+                        return cand
+                except ValueError:
+                    pass
+        raise VcfAutomationError(
+            f"Could not locate the CCI API for org '{org_name}' (tried {', '.join(tried)}). "
+            f"Set VCF_CCI_BASE_PATH explicitly; run GET /api/admin/diagnose?org={org_name} for details."
+        )
+
+    def _cci_namespaced(self, org_name: str, plural: str) -> bool:
+        key = (org_name, plural)
+        if key not in self._cci_namespaced_cache:
+            prefix = self._cci_prefix(org_name)
+            resp = self._request("GET", f"{prefix}/{CATALOG_GROUP}", org_name=org_name)
+            flag = True
+            if resp.status_code == 200:
+                for r in resp.json().get("resources", []):
+                    if r.get("name") == plural:
+                        flag = bool(r.get("namespaced", True))
+            self._cci_namespaced_cache[key] = flag
+        return self._cci_namespaced_cache[key]
+
+    def _cci_list(self, org_name: str, path: str, params: Optional[dict] = None) -> list[dict[str, Any]]:
+        """Kubernetes list with `continue` pagination."""
         items: list[dict[str, Any]] = []
-        page = 0
-        size = 200
+        token: Optional[str] = None
         while True:
-            params: dict[str, Any] = {"page": page, "size": size}
-            if settings.vcf_automation_project_id:
-                params["projects"] = settings.vcf_automation_project_id
-            resp = self._request("GET", CATALOG_ITEMS_PATH, org_name=org_name, params=params)
+            q = dict(params or {})
+            q["limit"] = 200
+            if token:
+                q["continue"] = token
+            resp = self._request("GET", path, org_name=org_name, params=q)
             if resp.status_code >= 400:
                 raise VcfAutomationError(
-                    f"Catalog listing failed for org '{org_name}' "
-                    f"({resp.status_code}) at {CATALOG_ITEMS_PATH}: {resp.text[:300]}"
+                    f"List failed for org '{org_name}' ({resp.status_code}) at {path}: {resp.text[:300]}"
                 )
             body = resp.json()
-            content = body.get("content", body if isinstance(body, list) else [])
-            items.extend(content)
-            total_pages = body.get("totalPages", 1) if isinstance(body, dict) else 1
-            page += 1
-            if page >= total_pages or not content:
-                break
-        return items
+            items.extend(body.get("items", []))
+            token = (body.get("metadata") or {}).get("continue")
+            if not token:
+                return items
 
-    def get_item_detail(self, org_name: str, item_id: str) -> dict[str, Any]:
-        resp = self._request(
-            "GET", CATALOG_ITEM_DETAIL_PATH.format(item_id=item_id), org_name=org_name
-        )
-        if resp.status_code >= 400:
-            raise VcfAutomationError(
-                f"Item detail failed (org={org_name}, item={item_id}, "
-                f"{resp.status_code}): {resp.text[:300]}"
-            )
-        return resp.json()
+    def list_projects(self, org_name: str) -> list[str]:
+        prefix = self._cci_prefix(org_name)
+        items = self._cci_list(org_name, f"{prefix}/{PROJECT_GROUP}/projects")
+        names = [i["metadata"]["name"] for i in items if i.get("metadata", {}).get("name")]
+        if settings.vcf_automation_project_id:
+            names = [n for n in names if n == settings.vcf_automation_project_id]
+        return names
+
+    def _catalog_items_path(self, org_name: str, project: str) -> str:
+        prefix = self._cci_prefix(org_name)
+        if self._cci_namespaced(org_name, "catalogitems"):
+            return f"{prefix}/{CATALOG_GROUP}/namespaces/{project}/catalogitems"
+        return f"{prefix}/{CATALOG_GROUP}/catalogitems"
+
+    def list_catalog_items(self, org_name: str) -> list[dict[str, Any]]:
+        """Catalog items visible in each project of the org, normalised to the
+        dict shape sync_service expects. The form schema comes along with the
+        listing (CatalogItem.spec.schema) and is cached for get_item_request_schema."""
+        out: list[dict[str, Any]] = []
+        for project in self.list_projects(org_name):
+            for it in self._cci_list(org_name, self._catalog_items_path(org_name, project)):
+                meta = it.get("metadata", {})
+                spec = it.get("spec", {}) or {}
+                name = meta.get("name")
+                if not name:
+                    continue
+                item_id = f"{project}{ITEM_ID_SEP}{name}"
+                self._schema_cache[(org_name, item_id)] = spec.get("schema") or {}
+                out.append(
+                    {
+                        "id": item_id,
+                        "name": name,
+                        "description": spec.get("description", "") or "",
+                        "type": "CatalogItem",
+                        "projectIds": [project],
+                        "version": (it.get("status") or {}).get("defaultVersion", "") or "",
+                        "updatedAt": meta.get("resourceVersion"),
+                    }
+                )
+        return out
 
     def get_item_request_schema(self, org_name: str, item_id: str) -> dict[str, Any]:
-        resp = self._request(
-            "GET", CATALOG_ITEM_FORM_PATH.format(item_id=item_id), org_name=org_name
-        )
-        if resp.status_code == 200:
-            return resp.json()
-        detail = self.get_item_detail(org_name, item_id)
-        return detail.get("schema", {}) or {}
+        cached = self._schema_cache.get((org_name, item_id))
+        if cached:
+            return cached
+        project, _, name = item_id.partition(ITEM_ID_SEP)
+        path = self._catalog_items_path(org_name, project) + f"/{name}"
+        resp = self._request("GET", path, org_name=org_name)
+        if resp.status_code >= 400:
+            raise VcfAutomationError(
+                f"Catalog item fetch failed (org={org_name}, item={item_id}, "
+                f"{resp.status_code}): {resp.text[:300]}"
+            )
+        return (resp.json().get("spec") or {}).get("schema") or {}
+
+    # ------------------------------------------------------------------
+    # Deployment = catalog.cci.vmware.com Instance
+    # ------------------------------------------------------------------
+    @staticmethod
+    def instance_name(deployment_name: str) -> str:
+        """Kubernetes object names must be DNS-1123 labels."""
+        import re
+
+        n = re.sub(r"[^a-z0-9-]+", "-", deployment_name.lower()).strip("-")
+        return (n or "deployment")[:63].strip("-")
+
+    def _instances_path(self, org_name: str, project: str) -> str:
+        prefix = self._cci_prefix(org_name)
+        return f"{prefix}/{CATALOG_GROUP}/namespaces/{project}/instances"
 
     def submit_request(
         self,
@@ -379,26 +469,83 @@ class VcfAutomationClient:
         project_id: Optional[str] = None,
         reason: str = "",
     ) -> dict[str, Any]:
-        payload: dict[str, Any] = {
-            "deploymentName": deployment_name,
-            "inputs": inputs,
-            "reason": reason,
+        project, _, item_name = item_id.partition(ITEM_ID_SEP)
+        project = project or project_id or ""
+        body = {
+            "apiVersion": "catalog.cci.vmware.com/v1alpha1",
+            "kind": "Instance",
+            "metadata": {
+                "name": self.instance_name(deployment_name),
+                "namespace": project,
+                "annotations": {"portal/display-name": deployment_name},
+            },
+            "spec": {
+                "description": reason or deployment_name,
+                "inputs": inputs,
+                "sourceRef": {"kind": "CatalogItem", "name": item_name},
+            },
         }
-        if project_id or settings.vcf_automation_project_id:
-            payload["projectId"] = project_id or settings.vcf_automation_project_id
-
         resp = self._request(
-            "POST",
-            CATALOG_ITEM_REQUEST_PATH.format(item_id=item_id),
-            org_name=org_name,
-            json=payload,
+            "POST", self._instances_path(org_name, project), org_name=org_name, json=body
         )
         if resp.status_code >= 400:
             raise VcfAutomationError(
-                f"Deploy request failed (org={org_name}, item={item_id}, "
+                f"Instance create failed (org={org_name}, item={item_id}, "
                 f"{resp.status_code}): {resp.text[:500]}"
             )
+        data = resp.json()
+        data["id"] = (data.get("metadata") or {}).get("name") or body["metadata"]["name"]
+        return data
+
+    def get_instance(self, org_name: str, project: str, name: str) -> Optional[dict[str, Any]]:
+        resp = self._request("GET", self._instances_path(org_name, project) + f"/{name}", org_name=org_name)
+        if resp.status_code == 404:
+            return None
+        if resp.status_code >= 400:
+            raise VcfAutomationError(
+                f"Instance fetch failed ({org_name}/{project}/{name}, {resp.status_code}): {resp.text[:300]}"
+            )
         return resp.json()
+
+    # ------------------------------------------------------------------
+    # Diagnostics (GET /api/admin/diagnose)
+    # ------------------------------------------------------------------
+    def diagnose(self, org_name: str) -> dict[str, Any]:
+        report: dict[str, Any] = {"org": org_name, "steps": []}
+
+        def step(label: str, fn):
+            try:
+                result = fn()
+                report["steps"].append({"step": label, "ok": True, "result": result})
+                return result
+            except Exception as exc:  # noqa: BLE001
+                report["steps"].append({"step": label, "ok": False, "error": str(exc)})
+                return None
+
+        step("org token", lambda: bool(self._get_org_token(org_name)))
+        for cand in CCI_PREFIX_CANDIDATES:
+            def probe(c=cand):
+                r = self._request("GET", f"{c}/{CATALOG_GROUP}", org_name=org_name)
+                names = []
+                if r.status_code == 200:
+                    try:
+                        names = [x.get("name") for x in r.json().get("resources", [])]
+                    except ValueError:
+                        pass
+                return {"status": r.status_code, "resources": names, "body": r.text[:200] if r.status_code != 200 else ""}
+            step(f"discovery prefix '{cand or '(none)'}'", probe)
+        projects = step("projects", lambda: self.list_projects(org_name))
+        if projects:
+            def sample():
+                items = self._cci_list(org_name, self._catalog_items_path(org_name, projects[0]))
+                return {
+                    "project": projects[0],
+                    "count": len(items),
+                    "first_item_keys": sorted(items[0].keys()) if items else [],
+                    "first_spec_keys": sorted((items[0].get("spec") or {}).keys()) if items else [],
+                }
+            step("catalog items (first project)", sample)
+        return report
 
 
 vcf_client = VcfAutomationClient()

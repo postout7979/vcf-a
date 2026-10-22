@@ -1,3 +1,4 @@
+from datetime import datetime, timedelta
 from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException
@@ -6,7 +7,7 @@ from sqlmodel import Session, select
 
 from app.db import get_session
 from app.models import CatalogItem, DeploymentRecord
-from app.vcf_client import vcf_client, VcfAutomationError
+from app.vcf_client import ITEM_ID_SEP, vcf_client, VcfAutomationError
 
 router = APIRouter(prefix="/api/deploy", tags=["deploy"])
 
@@ -18,7 +19,7 @@ class DeployRequest(BaseModel):
     reason: str = ""
 
 
-@router.post("/{org_id}/{vcf_item_id}")
+@router.post("/{org_id}/{vcf_item_id:path}")
 def submit_deployment(
     org_id: str, vcf_item_id: str, body: DeployRequest, session: Session = Depends(get_session)
 ):
@@ -49,7 +50,7 @@ def submit_deployment(
             project_id=item.project_id,
             reason=body.reason,
         )
-        record.vcf_request_id = str(result.get("id") or result.get("deploymentId") or "")
+        record.vcf_request_id = str(result.get("id") or "")
         record.status = "submitted"
         session.add(record)
         session.commit()
@@ -60,6 +61,35 @@ def submit_deployment(
         session.add(record)
         session.commit()
         raise HTTPException(status_code=502, detail=str(exc)) from exc
+
+
+@router.post("/refresh")
+def refresh_statuses(session: Session = Depends(get_session)):
+    """Pull the live Instance status (catalog.cci.vmware.com) for recent requests."""
+    since = datetime.utcnow() - timedelta(days=14)
+    records = session.exec(
+        select(DeploymentRecord)
+        .where(DeploymentRecord.created_at >= since, DeploymentRecord.status != "failed")
+        .order_by(DeploymentRecord.created_at.desc())
+        .limit(50)
+    ).all()
+    updated = errors = 0
+    for rec in records:
+        project, _, _ = rec.catalog_item_vcf_id.partition(ITEM_ID_SEP)
+        if not (project and rec.vcf_request_id and rec.org_name):
+            continue
+        try:
+            inst = vcf_client.get_instance(rec.org_name, project, rec.vcf_request_id)
+        except VcfAutomationError:
+            errors += 1
+            continue
+        new_status = "deleted" if inst is None else ((inst.get("status") or {}).get("status") or rec.status)
+        if new_status != rec.status:
+            rec.status = new_status
+            session.add(rec)
+            updated += 1
+    session.commit()
+    return {"checked": len(records), "updated": updated, "errors": errors}
 
 
 @router.get("")

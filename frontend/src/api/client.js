@@ -21,7 +21,13 @@ async function request(path, options = {}) {
 
 export const api = {
   listOrgs: () => request("/orgs"),
-  listCatalog: (orgId) => request(orgId ? `/catalog?org_id=${encodeURIComponent(orgId)}` : "/catalog"),
+  listCatalog: (orgId, project) => {
+    const q = new URLSearchParams();
+    if (orgId) q.set("org_id", orgId);
+    if (project) q.set("project", project);
+    const qs = q.toString();
+    return request(qs ? `/catalog?${qs}` : "/catalog");
+  },
   getCatalogItem: (orgId, vcfItemId) =>
     request(`/catalog/${encodeURIComponent(orgId)}/${encodeURIComponent(vcfItemId)}`),
   deploy: (orgId, vcfItemId, payload) =>
@@ -30,6 +36,8 @@ export const api = {
       body: JSON.stringify(payload),
     }),
   listDeployments: () => request("/deploy"),
+  refreshDeployments: () => request("/deploy/refresh", { method: "POST" }),
+  diagnose: (org) => request(`/admin/diagnose${org ? `?org=${encodeURIComponent(org)}` : ""}`),
   dashboardSummary: () => request("/dashboard/summary"),
   syncStatus: () => request("/admin/sync/status"),
   syncHistory: (limit = 20) => request(`/admin/sync/history?limit=${limit}`),

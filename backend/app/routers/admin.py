@@ -6,6 +6,7 @@ from app.db import get_session
 from app.models import SyncEvent
 from app.scheduler import next_run_time_iso
 from app.sync_service import run_sync
+from app.vcf_client import vcf_client
 
 router = APIRouter(prefix="/api/admin", tags=["admin"])
 
@@ -34,3 +35,9 @@ def sync_status(session: Session = Depends(get_session)):
         "nextRunAt": next_run_time_iso(),
         "intervalMinutes": settings.sync_interval_minutes,
     }
+
+
+@router.get("/diagnose")
+def diagnose(org: str):
+    """Step-by-step connectivity report for one org (token, CCI prefix, projects, catalog)."""
+    return vcf_client.diagnose(org)

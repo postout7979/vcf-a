@@ -2,6 +2,15 @@ import { useEffect, useState } from "react";
 import { api } from "../api/client.js";
 import DynamicForm from "./DynamicForm.jsx";
 
+function defaultsFromSchema(schema) {
+  const props = schema?.properties || schema?.schema?.properties || {};
+  const out = {};
+  Object.entries(props).forEach(([k, p]) => {
+    if (p && p.default !== undefined) out[k] = p.default;
+  });
+  return out;
+}
+
 export default function DeployDrawer({ item, onClose, onSubmitted }) {
   const [detail, setDetail] = useState(null);
   const [loading, setLoading] = useState(true);
@@ -19,7 +28,10 @@ export default function DeployDrawer({ item, onClose, onSubmitted }) {
       .then((d) => {
         if (cancelled) return;
         setDetail(d);
-        setDeploymentName(`${d.name}-${new Date().toISOString().slice(0, 10)}`);
+        // Kubernetes 객체 이름 규칙(소문자/숫자/-)에 맞춘 기본값
+        const base = String(d.name).toLowerCase().replace(/[^a-z0-9-]+/g, "-").replace(/^-+|-+$/g, "");
+        setDeploymentName(`${base}-${new Date().toISOString().slice(0, 10)}`);
+        setValues(defaultsFromSchema(d.schema));
       })
       .catch((e) => setError(e.message))
       .finally(() => setLoading(false));
@@ -35,7 +47,9 @@ export default function DeployDrawer({ item, onClose, onSubmitted }) {
     try {
       await api.deploy(item.orgId, item.vcfItemId, {
         deploymentName,
-        inputs: values,
+        inputs: Object.fromEntries(
+          Object.entries(values).map(([k, v]) => [k, Array.isArray(v) ? v.filter(Boolean) : v])
+        ),
         requestedBy,
       });
       onSubmitted?.(deploymentName);
@@ -54,7 +68,8 @@ export default function DeployDrawer({ item, onClose, onSubmitted }) {
           <div>
             <div className="card-title">{item.name}</div>
             <div className="hint mono" style={{ marginTop: 2 }}>
-              {item.orgName || item.orgId} · {item.vcfItemId}
+              {item.orgName || item.orgId}
+              {item.projectId ? ` · ${item.projectId}` : ""} · {item.name}
             </div>
           </div>
           <button className="drawer-close" onClick={onClose} aria-label="닫기">
@@ -67,7 +82,7 @@ export default function DeployDrawer({ item, onClose, onSubmitted }) {
         {!loading && detail && (
           <form onSubmit={handleSubmit}>
             <div className="field">
-              <label>배포 이름 (Deployment Name) *</label>
+              <label>Instance 이름 (Deployment Name) *</label>
               <input
                 type="text"
                 required

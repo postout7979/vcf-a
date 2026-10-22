@@ -113,6 +113,18 @@ export default function DashboardPage() {
       </div>
 
       <div className="panel-section">
+        <div className="panel-section-title">프로젝트별 카탈로그 구성</div>
+        {summary.catalogByProject?.length ? (
+          <BarList
+            rows={summary.catalogByProject.map((c) => ({ label: c.project, count: c.count }))}
+            colorVar="var(--accent-blue)"
+          />
+        ) : (
+          <div className="empty-state">프로젝트 정보가 있는 카탈로그가 없습니다.</div>
+        )}
+      </div>
+
+      <div className="panel-section">
         <div className="panel-section-title">카탈로그 타입 구성</div>
         <BarList
           rows={summary.catalogByType.map((c) => ({ label: c.type, count: c.count }))}

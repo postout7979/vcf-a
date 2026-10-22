@@ -51,7 +51,8 @@ def _sync_one_org(session: Session, org_id: str, org_name: str, details: list[di
 
         name = raw.get("name", "(no name)")
         description = raw.get("description", "") or ""
-        item_type = (raw.get("type") or {}).get("name") or raw.get("type") or ""
+        t = raw.get("type")
+        item_type = (t.get("name") if isinstance(t, dict) else t) or ""
         project_ids = raw.get("projectIds") or raw.get("projects") or []
         project_id = project_ids[0] if isinstance(project_ids, list) and project_ids else ""
         version = str(raw.get("version") or raw.get("versionName") or "")

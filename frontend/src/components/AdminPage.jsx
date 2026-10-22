@@ -1,6 +1,7 @@
 import { Fragment, useState } from "react";
 import { api } from "../api/client.js";
 import SyncPulse from "./SyncPulse.jsx";
+import { formatKst, parseUtc } from "../util/time.js";
 
 function DiffDetails({ details }) {
   if (!details || details.length === 0) {
@@ -98,7 +99,7 @@ export default function AdminPage({ status, history, onRefresh }) {
       </div>
 
       <div className="panel-section">
-        <div className="panel-section-title">Sync 이력</div>
+        <div className="panel-section-title">Sync 이력 (최신순)</div>
         <table className="table">
           <thead>
             <tr>
@@ -111,11 +112,13 @@ export default function AdminPage({ status, history, onRefresh }) {
             </tr>
           </thead>
           <tbody>
-            {[...history].reverse().map((ev) => (
+            {[...history]
+              .sort((a, b) => parseUtc(b.started_at) - parseUtc(a.started_at))
+              .map((ev) => (
               <Fragment key={ev.id}>
                 <tr>
                   <td>{ev.trigger === "manual" ? "수동" : "자동"}</td>
-                  <td className="mono">{new Date(ev.started_at).toLocaleString("ko-KR")}</td>
+                  <td className="mono">{formatKst(ev.started_at)}</td>
                   <td>
                     <span
                       className={`diff-chip ${ev.status === "error" ? "removed" : "added"}`}
