@@ -86,7 +86,8 @@ npm run dev   # http://localhost:5173, /api 요청은 8000번 백엔드로 프�
 |---|---|
 | `VCF_AUTOMATION_BASE_URL` | VCF Automation FQDN |
 | `VCF_AUTOMATION_USERNAME` / `PASSWORD` | provider 계정 (org 목록 조회용) |
-| `VCF_ORG_TOKENS` | org별 API 토큰 JSON 맵 (한 줄), 동기화 대상 org 허용 목록 겸용 |
+| `VCF_ORG_ALLOWLIST` | 동기화할 org 이름(쉼표 구분), 비우면 전체 |
+| `VCF_ORG_TOKENS` | (선택) org별 API 토큰 JSON 맵, 한 줄 |
 | `SYNC_INTERVAL_MINUTES` | 자동 sync 주기(분), 기본 60 |
 | `DATABASE_URL` | Docker는 `sqlite:////app/data/vcf_portal.db`, 로컬은 `sqlite:///./vcf_portal.db` |
 
@@ -98,10 +99,11 @@ VCF 9 Automation은 provider 플레인과 org 플레인의 인증이 분리되�
 |---|---|
 | provider 로그인 | `POST /cloudapi/1.0.0/sessions/provider` (Basic `user@system:password`, 토큰은 응답 헤더 `x-vmware-vcloud-access-token`) |
 | org 목록 | `GET /cloudapi/1.0.0/orgs` (Bearer) |
-| org 토큰 | `POST /tm/oauth/tenant/<org명>/token` (`grant_type=refresh_token`, org의 API 토큰) |
+| org 토큰 (기본) | provider 토큰으로 교환: `GET /cloudapi/1.0.0/openIdProvider/relyingParties`로 clientId 조회 → `POST /oidc/oauth2/token` (jwt-bearer, 헤더 `x-vmware-vcloud-tenant-context: <org id>`) |
+| org 토큰 (대안) | `POST /tm/oauth/tenant/<org명>/token` (org별 API 토큰, `VCF_ORG_TOKENS`에 있는 org만) |
 | 카탈로그/배포 | `/catalog/api/...`, `/iaas/api/...` (Bearer = org 토큰) |
 
-org 토큰은 org별 API 토큰으로 발급받으므로 `VCF_ORG_TOKENS`에 org 이름별로 등록합니다.
+provider 관리자 계정만 있으면 org별 API 토큰 없이 org 토큰을 받을 수 있습니다. org별 API 토큰은 `VCF_ORG_TOKENS`에 넣은 org에만 대안으로 쓰이고, 동기화 대상을 제한하려면 `VCF_ORG_ALLOWLIST`를 씁니다.
 `/catalog/api/items`의 정확한 하위 경로는 공개 문서에서 확인하지 못해, 아래로 직접 점검하는 것을 권장합니다.
 
 ```bash

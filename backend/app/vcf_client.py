@@ -43,6 +43,10 @@ PROVIDER_SESSION_PATH = "/cloudapi/1.0.0/sessions/provider"
 PROVIDER_TOKEN_PATH = "/oauth/provider/token"
 ORGS_PATH = "/cloudapi/1.0.0/orgs"
 TENANT_TOKEN_PATH = "/tm/oauth/tenant/{org}/token"
+# Provider -> org token exchange (no per-org API token needed)
+RELYING_PARTIES_PATH = "/cloudapi/1.0.0/openIdProvider/relyingParties"
+OIDC_TOKEN_PATH = "/oidc/oauth2/token"
+TENANT_CONTEXT_HEADER = "x-vmware-vcloud-tenant-context"
 
 CATALOG_ITEMS_PATH = "/catalog/api/items"
 CATALOG_ITEM_DETAIL_PATH = "/catalog/api/items/{item_id}"
@@ -79,6 +83,8 @@ class VcfAutomationClient:
         self._provider_token: Optional[str] = None
         self._provider_expiry: float = 0.0
         self._org_tokens: dict[str, tuple[str, float]] = {}
+        self._org_ids: dict[str, str] = {}  # org name -> provider-side org id
+        self._rp_client_id: Optional[str] = None
 
     def _client(self) -> httpx.Client:
         return httpx.Client(verify=self._verify, timeout=30.0)
@@ -152,7 +158,7 @@ class VcfAutomationClient:
         - With provider credentials: GET /cloudapi/1.0.0/orgs (paged).
         - Without them: fall back to the org names configured in VCF_ORG_TOKENS,
           so the portal can run with per-org API tokens only.
-        When VCF_ORG_TOKENS is set it also acts as an allow-list.
+        VCF_ORG_ALLOWLIST (comma-separated) optionally restricts the orgs.
         """
         token_map = _org_token_map()
 
@@ -182,21 +188,87 @@ class VcfAutomationClient:
                 break
             page += 1
 
-        if token_map:
-            orgs = [o for o in orgs if o.get("name") in token_map]
+        for o in orgs:
+            if o.get("name") and o.get("id"):
+                self._org_ids[o["name"]] = o["id"]
+
+        allow = {n.strip() for n in (settings.vcf_org_allowlist or "").split(",") if n.strip()}
+        if allow:
+            orgs = [o for o in orgs if o.get("name") in allow]
         return orgs
 
     # ------------------------------------------------------------------
     # Organization (tenant) plane
     # ------------------------------------------------------------------
+    def _relying_party_client_id(self) -> str:
+        if settings.vcf_relying_party_client_id:
+            return settings.vcf_relying_party_client_id
+        if self._rp_client_id:
+            return self._rp_client_id
+        resp = self._request(
+            "GET", RELYING_PARTIES_PATH, headers={"Accept": CLOUDAPI_VERSION}
+        )
+        if resp.status_code >= 400:
+            raise VcfAutomationError(
+                f"Relying party lookup failed ({resp.status_code}) at {RELYING_PARTIES_PATH}: "
+                f"{resp.text[:300]}"
+            )
+        values = resp.json().get("values", [])
+        pick = next((v for v in values if "automation" in str(v.get("name", "")).lower()), None)
+        pick = pick or (values[0] if values else None)
+        if not pick or not pick.get("clientId"):
+            raise VcfAutomationError("No OIDC relying party with a clientId was returned.")
+        self._rp_client_id = pick["clientId"]
+        return self._rp_client_id
+
+    def _login_org_via_provider(self, org_name: str) -> str:
+        """Exchange the provider bearer token for an org-scoped token
+        (jwt-bearer grant + x-vmware-vcloud-tenant-context). No per-org API token."""
+        org_id = self._org_ids.get(org_name)
+        if not org_id:
+            self.list_orgs()
+            org_id = self._org_ids.get(org_name)
+        if not org_id:
+            raise VcfAutomationError(f"Org '{org_name}' was not found in the provider org list.")
+
+        client_id = self._relying_party_client_id()
+        # The header may expect the full URN or just the UUID; try both.
+        candidates = [org_id]
+        if org_id.startswith("urn:"):
+            candidates.append(org_id.rsplit(":", 1)[-1])
+        last = ""
+        for ctx in candidates:
+            with self._client() as client:
+                resp = client.post(
+                    f"{self._base_url}{OIDC_TOKEN_PATH}",
+                    headers={
+                        "Accept": CLOUDAPI_VERSION,
+                        "Content-Type": "application/x-www-form-urlencoded",
+                        TENANT_CONTEXT_HEADER: ctx,
+                    },
+                    data={
+                        "grant_type": "urn:ietf:params:oauth:grant-type:jwt-bearer",
+                        "scope": "openid profile email phone groups vcd_idp",
+                        "assertion": self._get_provider_token(),
+                        "client_id": client_id,
+                    },
+                )
+            if resp.status_code < 400 and resp.json().get("access_token"):
+                return resp.json()["access_token"]
+            last = f"({resp.status_code}) {resp.text[:300]}"
+        raise VcfAutomationError(
+            f"Provider->org token exchange failed for '{org_name}' at {OIDC_TOKEN_PATH}: {last}"
+        )
+
     def _login_org(self, org_name: str) -> str:
         token_map = _org_token_map()
         api_token = token_map.get(org_name) or settings.vcf_automation_refresh_token
         if not api_token:
+            if self.has_provider_credentials:
+                return self._login_org_via_provider(org_name)
             raise VcfAutomationError(
-                f"No API token for org '{org_name}'. Add it to VCF_ORG_TOKENS "
-                f'(e.g. {{"{org_name}": "<api token>"}}) or set VCF_AUTOMATION_REFRESH_TOKEN '
-                f"as a default. Create the token in that org's UI (user menu > API tokens)."
+                f"No credentials for org '{org_name}': set provider credentials "
+                f"(VCF_AUTOMATION_USERNAME/PASSWORD) or an API token in VCF_ORG_TOKENS."
             )
         with self._client() as client:
             resp = client.post(

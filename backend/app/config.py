@@ -13,6 +13,10 @@ class Settings(BaseSettings):
     # Org plane: per-org API (refresh) tokens as JSON {"org-name": "token"},
     # and an optional default token used for orgs not listed in the map.
     vcf_org_tokens: str = ""
+    # Optional: comma-separated org names to sync (default: every org the provider sees)
+    vcf_org_allowlist: str = ""
+    # Optional: override the OIDC relying party clientId used for provider->org exchange
+    vcf_relying_party_client_id: str = ""
     vcf_automation_refresh_token: str = ""
     vcf_automation_project_id: str = ""
     vcf_verify_tls: bool = True
