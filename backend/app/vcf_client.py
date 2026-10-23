@@ -535,16 +535,43 @@ class VcfAutomationClient:
                 return {"status": r.status_code, "resources": names, "body": r.text[:200] if r.status_code != 200 else ""}
             step(f"discovery prefix '{cand or '(none)'}'", probe)
         projects = step("projects", lambda: self.list_projects(org_name))
-        if projects:
-            def sample():
-                items = self._cci_list(org_name, self._catalog_items_path(org_name, projects[0]))
-                return {
-                    "project": projects[0],
-                    "count": len(items),
-                    "first_item_keys": sorted(items[0].keys()) if items else [],
-                    "first_spec_keys": sorted((items[0].get("spec") or {}).keys()) if items else [],
-                }
-            step("catalog items (first project)", sample)
+        prefix = ""
+        try:
+            prefix = self._cci_prefix(org_name)
+        except Exception:  # noqa: BLE001
+            pass
+
+        def probe_list(path: str):
+            r = self._request("GET", path, org_name=org_name, params={"limit": 200})
+            out: dict[str, Any] = {"status": r.status_code}
+            if r.status_code == 200:
+                items = r.json().get("items", [])
+                out["count"] = len(items)
+                out["sample"] = [
+                    {
+                        "namespace": (i.get("metadata") or {}).get("namespace"),
+                        "name": (i.get("metadata") or {}).get("name"),
+                        "spec_keys": sorted((i.get("spec") or {}).keys()),
+                    }
+                    for i in items[:5]
+                ]
+            else:
+                out["body"] = r.text[:200]
+            return out
+
+        for project in projects or []:
+            for plural in ("catalogitems", "catalogitemversions"):
+                step(
+                    f"{plural} in project '{project}'",
+                    lambda pr=project, pl=plural: probe_list(
+                        f"{prefix}/{CATALOG_GROUP}/namespaces/{pr}/{pl}"
+                    ),
+                )
+        for plural in ("catalogitems", "catalogitemversions"):
+            step(
+                f"{plural} (all namespaces)",
+                lambda pl=plural: probe_list(f"{prefix}/{CATALOG_GROUP}/{pl}"),
+            )
         return report
 
 
