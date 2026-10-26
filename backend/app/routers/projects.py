@@ -1,10 +1,15 @@
+import asyncio
+import ssl
 from typing import Optional
 
+import websockets
 import yaml
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, WebSocket, WebSocketDisconnect
 from pydantic import BaseModel
 from sqlmodel import Session, select
 
+from app import console_relay
+from app.config import settings
 from app.db import get_session
 from app.models import Organization, PortalVirtualMachine, PortalVmGroup
 from app.vcf_client import VcfAutomationError, vcf_client
@@ -144,9 +149,85 @@ def open_virtual_machine_console(
 ):
     org_name = _org_name(org_id, session)
     try:
-        return vcf_client.open_namespace_vm_remote_console(org_name, project, namespace, vm_name)
+        result = vcf_client.open_namespace_vm_remote_console(org_name, project, namespace, vm_name)
     except VcfAutomationError as exc:
         raise HTTPException(status_code=502, detail=str(exc)) from exc
+    # A WebSocket opened from JavaScript to vcf-vra.vcf.local fails
+    # silently if the browser doesn't already trust its certificate (no
+    # click-through warning like a page navigation gets) - confirmed by a
+    # raw RFB handshake against the same ticket succeeding end-to-end with
+    # certificate verification disabled, exactly what a browser would
+    # refuse without ever surfacing why. Relay through this backend
+    # instead, so the browser only has to trust this portal's own cert.
+    token = console_relay.register(result["consoleUrl"])
+    return {"consoleUrl": f"/api/projects/console-relay/{token}"}
+
+
+@router.websocket("/console-relay/{token}")
+async def console_relay_ws(websocket: WebSocket, token: str):
+    upstream = console_relay.resolve(token)
+    if not upstream:
+        await websocket.close(code=4404)
+        return
+
+    # The ticket WebSocket requires the "binary" subprotocol to be offered
+    # or the gateway 500s the handshake ("not upgraded: selected a
+    # protocol not present in offered protocols") - confirmed live.
+    requested = websocket.scope.get("subprotocols") or []
+    subprotocol = "binary" if "binary" in requested else (requested[0] if requested else None)
+    await websocket.accept(subprotocol=subprotocol)
+
+    ctx: Optional[ssl.SSLContext] = None
+    if not settings.vcf_verify_tls:
+        ctx = ssl.create_default_context()
+        ctx.check_hostname = False
+        ctx.verify_mode = ssl.CERT_NONE
+
+    try:
+        async with websockets.connect(
+            upstream, ssl=ctx, subprotocols=["binary"], max_size=None
+        ) as upstream_ws:
+            forward = asyncio.create_task(_relay_client_to_upstream(websocket, upstream_ws))
+            backward = asyncio.create_task(_relay_upstream_to_client(upstream_ws, websocket))
+            done, pending = await asyncio.wait({forward, backward}, return_when=asyncio.FIRST_COMPLETED)
+            for task in pending:
+                task.cancel()
+            await asyncio.gather(*pending, return_exceptions=True)
+    except (OSError, websockets.exceptions.WebSocketException) as exc:
+        try:
+            await websocket.close(code=1011, reason=str(exc)[:120])
+        except RuntimeError:
+            pass
+
+
+async def _relay_client_to_upstream(client_ws: WebSocket, upstream_ws) -> None:
+    try:
+        while True:
+            message = await client_ws.receive()
+            if message["type"] == "websocket.disconnect":
+                break
+            if message.get("bytes") is not None:
+                await upstream_ws.send(message["bytes"])
+            elif message.get("text") is not None:
+                await upstream_ws.send(message["text"])
+    except WebSocketDisconnect:
+        pass
+    finally:
+        await upstream_ws.close()
+
+
+async def _relay_upstream_to_client(upstream_ws, client_ws: WebSocket) -> None:
+    try:
+        async for message in upstream_ws:
+            if isinstance(message, bytes):
+                await client_ws.send_bytes(message)
+            else:
+                await client_ws.send_text(message)
+    finally:
+        try:
+            await client_ws.close()
+        except RuntimeError:
+            pass
 
 
 @router.get("/{org_id}/{project}/namespaces/{namespace}/vm-images")
