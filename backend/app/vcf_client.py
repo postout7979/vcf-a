@@ -56,6 +56,12 @@ PROJECT_GROUP = "apis/project.cci.vmware.com/v1alpha2"   # Project
 # VM Service deployments run inside a Project's namespace, so this is shown
 # alongside the Project to confirm the target before deploying.
 INFRASTRUCTURE_GROUP = "apis/infrastructure.cci.vmware.com/v1alpha3"  # SupervisorNamespace
+# VirtualMachineRemoteConsoleRequest lives in the same API group but is only
+# served at v1alpha1 (not discoverable via /openapi/v3 - found by reading
+# VCF Automation's own "Open Console" network calls, then confirmed live by
+# POSTing increasingly complete bodies and reading the 400 validation
+# messages for each missing field).
+REMOTE_CONSOLE_GROUP = "apis/infrastructure.cci.vmware.com/v1alpha1"
 # The URL prefix in front of /apis is not stated in the public docs, so it is
 # auto-detected (see _cci_prefix) unless VCF_CCI_BASE_PATH is set.
 CCI_PREFIX_CANDIDATES = ["/cci/kubernetes", ""]
@@ -469,6 +475,50 @@ class VcfAutomationClient:
             )
         return out
 
+    def open_namespace_vm_remote_console(
+        self, org_name: str, project: str, namespace: str, vm_name: str
+    ) -> dict[str, Any]:
+        """One-time console ticket for a VM, via VCF Automation's own CCI
+        API - the same call its own "Open Console" feature makes.
+
+        Unlike vm-operator's VirtualMachineWebConsoleRequest CRD (which this
+        portal tried first), this resource's status is populated
+        synchronously in the POST response (no ticket object to poll/clean
+        up), and status.webConsoleUrl points at this same CCI gateway host
+        - already reachable from both this backend and the end user's
+        browser, unlike vm-operator's proxyAddr (an ESXi-side host that
+        rejects connections from anywhere off vSphere's own management
+        network, confirmed by testing directly against it). The WebSocket
+        it points to speaks plain RFB (VNC) once the "binary" subprotocol
+        is offered in the handshake - not VMware's proprietary WebMKS
+        binary protocol as originally assumed - confirmed live by reading
+        the "RFB 003.008" server banner, so the frontend renders it with
+        noVNC rather than a reverse-engineered or vendored WMKS client.
+        """
+        prefix = self._cci_prefix(org_name)
+        path = f"{prefix}/{REMOTE_CONSOLE_GROUP}/namespaces/{project}/virtualmachineremoteconsolerequests"
+        resp = self._request(
+            "POST",
+            path,
+            org_name=org_name,
+            json={
+                "apiVersion": REMOTE_CONSOLE_GROUP.split("/", 1)[1],
+                "kind": "VirtualMachineRemoteConsoleRequest",
+                "metadata": {"generateName": f"{vm_name}-console-"},
+                "spec": {"supervisorNamespaceName": namespace, "virtualMachineName": vm_name},
+            },
+        )
+        if resp.status_code >= 400:
+            raise VcfAutomationError(
+                f"VirtualMachineRemoteConsoleRequest create failed ({resp.status_code}) for '{vm_name}': "
+                f"{resp.text[:400]}"
+            )
+        status = resp.json().get("status") or {}
+        web_console_url = status.get("webConsoleUrl")
+        if not web_console_url:
+            raise VcfAutomationError(f"Console ticket response had no webConsoleUrl for '{vm_name}'.")
+        return {"consoleUrl": web_console_url}
+
     # ------------------------------------------------------------------
     # Namespace resource tabs (VM Service / Kubernetes / Containers /
     # Volumes / Load Balancer). These live on the Supervisor cluster
@@ -634,123 +684,6 @@ class VcfAutomationClient:
                     f"VirtualMachine fetch failed ({resp.status_code}) for '{name}': {resp.text[:300]}"
                 )
         raise VcfAutomationError(f"VirtualMachine '{name}' not found in namespace '{namespace}'.")
-
-    def open_namespace_vm_web_console(
-        self, org_name: str, endpoint_url: str, namespace: str, name: str
-    ) -> dict[str, Any]:
-        """Open a one-time browser web console session for a VM.
-
-        Per vm-operator's own docs (vm-operator.readthedocs.io, "VM Web
-        Console"): submit an RSA-OAEP(SHA-512) public key as
-        VirtualMachineWebConsoleRequest.spec.publicKey; the controller
-        returns, in status.response, a base64-encoded WebMKS ticket URL
-        encrypted with that key, plus status.proxyAddr. The decrypted
-        WebMKS URL's host/port/ticket are then combined with proxyAddr into
-        the browser-facing console URL:
-          https://<proxyAddr>/vm/web-console/proxy?host=<host>&port=<port>
-            &ticket=<ticket>&uuid=<request-uid>&namespace=<namespace>
-
-        spec.publicKey must be a PEM block headered "PUBLIC KEY" whose body
-        is actually PKCS#1 DER, not a real SubjectPublicKeyInfo/PKIX key -
-        vm-operator's validating webhook checks the PEM header is literally
-        "PUBLIC KEY" but then parses the body with x509.ParsePKCS1PublicKey
-        (confirmed by reading virtualmachinewebconsolerequest_validator.go
-        in vmware-tanzu/vm-operator). A standard SubjectPublicKeyInfo PEM
-        always fails that parse, and the webhook's error always reports the
-        rejected value as a literal "" (hardcoded in its own field.Invalid
-        call) regardless of what was actually sent - which is why the 422
-        looked like an empty-key problem when it was really a format one.
-        """
-        import base64
-        import time as _time
-        from urllib.parse import urlparse
-
-        from cryptography.hazmat.primitives import hashes, serialization
-        from cryptography.hazmat.primitives.asymmetric import padding, rsa
-
-        private_key = rsa.generate_private_key(public_exponent=65537, key_size=2048)
-        pkcs1_der = private_key.public_key().public_bytes(
-            encoding=serialization.Encoding.DER,
-            format=serialization.PublicFormat.PKCS1,
-        )
-        pkcs1_b64 = base64.encodebytes(pkcs1_der).decode("ascii")
-        public_pem = f"-----BEGIN PUBLIC KEY-----\n{pkcs1_b64}-----END PUBLIC KEY-----\n"
-
-        # Not every Supervisor build serves every vmoperator.vmware.com
-        # version of this CRD - fall back across versions on a 404 the same
-        # way the read paths above do, instead of hardcoding
-        # VM_OPERATOR_VERSIONS[0].
-        for gv in self.VM_OPERATOR_VERSIONS:
-            req_name = self.instance_name(f"{name}-console-{int(_time.time())}")
-            create_resp = self._ns_request(
-                org_name,
-                endpoint_url,
-                "POST",
-                f"/apis/{gv}/namespaces/{namespace}/virtualmachinewebconsolerequests",
-                json={
-                    "apiVersion": gv,
-                    "kind": "VirtualMachineWebConsoleRequest",
-                    "metadata": {"name": req_name, "namespace": namespace},
-                    "spec": {"name": name, "publicKey": public_pem},
-                },
-            )
-            if create_resp.status_code == 404:
-                continue
-            if create_resp.status_code >= 400:
-                raise VcfAutomationError(
-                    f"WebConsoleRequest create failed ({create_resp.status_code}) for '{name}': "
-                    f"{create_resp.text}"
-                )
-            request_uid = (create_resp.json().get("metadata") or {}).get("uid", "")
-
-            encrypted_response = None
-            proxy_addr = None
-            try:
-                for _ in range(20):
-                    get_resp = self._ns_request(
-                        org_name,
-                        endpoint_url,
-                        "GET",
-                        f"/apis/{gv}/namespaces/{namespace}/virtualmachinewebconsolerequests/{req_name}",
-                    )
-                    if get_resp.status_code == 200:
-                        status = get_resp.json().get("status") or {}
-                        encrypted_response = status.get("response")
-                        proxy_addr = status.get("proxyAddr")
-                        if encrypted_response and proxy_addr:
-                            break
-                    _time.sleep(0.5)
-            finally:
-                # Best-effort cleanup; the request is short-lived/single-use anyway.
-                self._ns_request(
-                    org_name,
-                    endpoint_url,
-                    "DELETE",
-                    f"/apis/{gv}/namespaces/{namespace}/virtualmachinewebconsolerequests/{req_name}",
-                )
-
-            if not encrypted_response or not proxy_addr:
-                raise VcfAutomationError("웹 콘솔 티켓 발급이 시간 내에 완료되지 않았습니다. 다시 시도하세요.")
-
-            decrypted = private_key.decrypt(
-                base64.b64decode(encrypted_response),
-                padding.OAEP(mgf=padding.MGF1(algorithm=hashes.SHA512()), algorithm=hashes.SHA512(), label=None),
-            ).decode("utf-8")
-
-            parsed = urlparse(decrypted)
-            host = parsed.hostname or ""
-            port = parsed.port or 443
-            ticket = parsed.path.rsplit("/", 1)[-1]
-
-            console_url = (
-                f"https://{proxy_addr}/vm/web-console/proxy?host={host}&port={port}"
-                f"&ticket={ticket}&uuid={request_uid}&namespace={namespace}"
-            )
-            return {"consoleUrl": console_url}
-
-        raise VcfAutomationError(
-            f"VirtualMachineWebConsoleRequest API not available in namespace '{namespace}'."
-        )
 
     def list_namespace_vm_images(
         self, org_name: str, endpoint_url: str, namespace: str

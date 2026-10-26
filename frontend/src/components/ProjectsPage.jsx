@@ -442,7 +442,8 @@ export default function ProjectsPage({ orgId, projectId, projects = [] }) {
     setConsoleError(null);
     try {
       const { consoleUrl } = await api.openVmConsole(orgId, projectId, namespaceName, vmName);
-      if (win) win.location.href = consoleUrl;
+      const viewerUrl = `/console.html?url=${encodeURIComponent(consoleUrl)}&vm=${encodeURIComponent(vmName)}`;
+      if (win) win.location.href = viewerUrl;
     } catch (e) {
       if (win) win.close();
       setConsoleError(`${vmName}: ${e.message}`);

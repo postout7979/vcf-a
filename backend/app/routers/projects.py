@@ -1,18 +1,10 @@
-import asyncio
-import ssl
 from typing import Optional
-from urllib.parse import urlsplit
 
-import httpx
-import websockets
 import yaml
-from fastapi import APIRouter, Depends, HTTPException, Request, WebSocket, WebSocketDisconnect
-from fastapi.responses import Response
+from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
 from sqlmodel import Session, select
 
-from app import console_relay
-from app.config import settings
 from app.db import get_session
 from app.models import Organization, PortalVirtualMachine, PortalVmGroup
 from app.vcf_client import VcfAutomationError, vcf_client
@@ -152,147 +144,9 @@ def open_virtual_machine_console(
 ):
     org_name = _org_name(org_id, session)
     try:
-        endpoint = _namespace_endpoint(org_name, project, namespace)
-        result = vcf_client.open_namespace_vm_web_console(org_name, endpoint, namespace, vm_name)
+        return vcf_client.open_namespace_vm_remote_console(org_name, project, namespace, vm_name)
     except VcfAutomationError as exc:
         raise HTTPException(status_code=502, detail=str(exc)) from exc
-    # The real consoleUrl points at proxyAddr, an internal Supervisor host
-    # the user's browser usually can't route to. Hand the browser a
-    # same-origin relay URL instead - this backend already has a working
-    # network path to proxyAddr (it just used it to issue the ticket).
-    token = console_relay.register(result["consoleUrl"])
-    return {"consoleUrl": f"/api/projects/console-relay/{token}"}
-
-
-def _relay_ssl_context() -> Optional[ssl.SSLContext]:
-    if settings.vcf_verify_tls:
-        return None
-    ctx = ssl.create_default_context()
-    ctx.check_hostname = False
-    ctx.verify_mode = ssl.CERT_NONE
-    return ctx
-
-
-_REWRITABLE_CONTENT_TYPES = ("text/html", "text/javascript", "application/javascript", "text/css")
-
-
-def _rewrite_same_origin_refs(body: bytes, content_type: str, token: str, upstream: str) -> bytes:
-    """Best-effort rewrite of absolute same-host refs in a text response.
-
-    If the upstream ticket page embeds absolute links back to proxyAddr
-    (e.g. a <script src="https://proxyAddr/vm/web-console/wmks.min.js">,
-    or a hardcoded `new WebSocket("wss://proxyAddr/...")`), those would
-    bypass our relay and hit the (browser-unreachable) host directly. Swap
-    the exact upstream URL and its bare origin for our relay path so such
-    references stay same-origin through this backend instead.
-    """
-    if not any(content_type.startswith(ct) for ct in _REWRITABLE_CONTENT_TYPES):
-        return body
-    origin_parts = urlsplit(upstream)
-    origin = f"{origin_parts.scheme}://{origin_parts.netloc}"
-    relay_path = f"/api/projects/console-relay/{token}"
-    relay_asset_base = f"{relay_path}/_asset"
-    text = body.decode("utf-8", errors="replace")
-    text = text.replace(f"wss://{origin_parts.netloc}", relay_path)
-    text = text.replace(f"ws://{origin_parts.netloc}", relay_path)
-    text = text.replace(upstream, relay_path)
-    text = text.replace(origin, relay_asset_base)
-    return text.encode("utf-8")
-
-
-@router.get("/console-relay/{token}")
-def console_relay_http(token: str):
-    upstream = console_relay.resolve(token)
-    if not upstream:
-        raise HTTPException(status_code=404, detail="콘솔 세션이 만료되었습니다. 웹 콘솔을 다시 열어주세요.")
-    try:
-        resp = httpx.get(upstream, verify=settings.vcf_verify_tls, timeout=30.0)
-    except httpx.HTTPError as exc:
-        raise HTTPException(status_code=502, detail=f"콘솔 프록시 연결 실패: {exc}") from exc
-    content_type = resp.headers.get("content-type", "application/octet-stream")
-    body = _rewrite_same_origin_refs(resp.content, content_type, token, upstream)
-    return Response(content=body, status_code=resp.status_code, media_type=content_type)
-
-
-@router.get("/console-relay/{token}/_asset/{subpath:path}")
-def console_relay_asset(token: str, subpath: str, request: Request):
-    """Secondary same-origin resources (JS/CSS/etc.) the ticket page may
-    reference next to the main proxy URL - see _rewrite_same_origin_refs."""
-    upstream = console_relay.resolve(token)
-    if not upstream:
-        raise HTTPException(status_code=404, detail="콘솔 세션이 만료되었습니다. 웹 콘솔을 다시 열어주세요.")
-    origin_parts = urlsplit(upstream)
-    target = f"{origin_parts.scheme}://{origin_parts.netloc}/{subpath}"
-    if request.url.query:
-        target = f"{target}?{request.url.query}"
-    try:
-        resp = httpx.get(target, verify=settings.vcf_verify_tls, timeout=30.0)
-    except httpx.HTTPError as exc:
-        raise HTTPException(status_code=502, detail=f"콘솔 프록시 연결 실패: {exc}") from exc
-    content_type = resp.headers.get("content-type", "application/octet-stream")
-    body = _rewrite_same_origin_refs(resp.content, content_type, token, upstream)
-    return Response(content=body, status_code=resp.status_code, media_type=content_type)
-
-
-@router.websocket("/console-relay/{token}")
-async def console_relay_ws(websocket: WebSocket, token: str):
-    upstream = console_relay.resolve(token)
-    if not upstream:
-        await websocket.close(code=4404)
-        return
-
-    upstream_ws_url = upstream.replace("https://", "wss://", 1).replace("http://", "ws://", 1)
-    await websocket.accept()
-
-    connect_kwargs: dict = {"max_size": None}
-    if upstream_ws_url.startswith("wss://"):
-        ctx = _relay_ssl_context()
-        if ctx is not None:
-            connect_kwargs["ssl"] = ctx
-
-    try:
-        async with websockets.connect(upstream_ws_url, **connect_kwargs) as upstream_ws:
-            forward = asyncio.create_task(_relay_client_to_upstream(websocket, upstream_ws))
-            backward = asyncio.create_task(_relay_upstream_to_client(upstream_ws, websocket))
-            done, pending = await asyncio.wait({forward, backward}, return_when=asyncio.FIRST_COMPLETED)
-            for task in pending:
-                task.cancel()
-            await asyncio.gather(*pending, return_exceptions=True)
-    except (OSError, websockets.exceptions.WebSocketException) as exc:
-        try:
-            await websocket.close(code=1011, reason=str(exc)[:120])
-        except RuntimeError:
-            pass
-
-
-async def _relay_client_to_upstream(client_ws: WebSocket, upstream_ws) -> None:
-    try:
-        while True:
-            message = await client_ws.receive()
-            if message["type"] == "websocket.disconnect":
-                break
-            if message.get("bytes") is not None:
-                await upstream_ws.send(message["bytes"])
-            elif message.get("text") is not None:
-                await upstream_ws.send(message["text"])
-    except WebSocketDisconnect:
-        pass
-    finally:
-        await upstream_ws.close()
-
-
-async def _relay_upstream_to_client(upstream_ws, client_ws: WebSocket) -> None:
-    try:
-        async for message in upstream_ws:
-            if isinstance(message, bytes):
-                await client_ws.send_bytes(message)
-            else:
-                await client_ws.send_text(message)
-    finally:
-        try:
-            await client_ws.close()
-        except RuntimeError:
-            pass
 
 
 @router.get("/{org_id}/{project}/namespaces/{namespace}/vm-images")

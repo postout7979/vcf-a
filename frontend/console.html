@@ -1,0 +1,53 @@
+<!doctype html>
+<html lang="ko">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>웹 콘솔</title>
+    <style>
+      html,
+      body {
+        margin: 0;
+        padding: 0;
+        height: 100%;
+        background: #111;
+        color: #eee;
+        font-family: "Inter", system-ui, sans-serif;
+        overflow: hidden;
+      }
+      #bar {
+        display: flex;
+        align-items: center;
+        gap: 8px;
+        height: 34px;
+        padding: 0 12px;
+        background: #1b1b1b;
+        border-bottom: 1px solid #333;
+        font-size: 13px;
+        box-sizing: border-box;
+      }
+      #status {
+        opacity: 0.85;
+      }
+      #status.error {
+        color: #f2799a;
+      }
+      #status.connected {
+        color: #3cc98a;
+      }
+      #screen {
+        position: absolute;
+        top: 34px;
+        left: 0;
+        right: 0;
+        bottom: 0;
+        background: #000;
+      }
+    </style>
+  </head>
+  <body>
+    <div id="bar"><span id="status">초기화 중...</span></div>
+    <div id="screen"></div>
+    <script type="module" src="/src/console-main.js"></script>
+  </body>
+</html>
