@@ -880,13 +880,17 @@ class VcfAutomationClient:
             # Actually mount the selected ISO as a CD-ROM device - each
             # device requires a reference to an ISO-type VirtualMachineImage
             # or ClusterVirtualMachineImage as backing (verified via schema
-            # + dry-run).
+            # + dry-run). allowGuestControl defaults to true when omitted,
+            # which lets the guest OS eject the media itself (e.g. an
+            # installer auto-ejecting after setup) with nothing afterward
+            # ever reconnecting it - pin it false so the mount stays put.
             spec["hardware"] = {
                 "cdrom": [
                     {
                         "name": "cdrom0",
                         "image": {"kind": cdrom_image_kind or "VirtualMachineImage", "name": cdrom_image_name},
                         "connected": True,
+                        "allowGuestControl": False,
                     }
                 ]
             }
