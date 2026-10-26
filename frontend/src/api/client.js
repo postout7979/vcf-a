@@ -58,6 +58,13 @@ export const api = {
       )}/vmservice`,
       { method: "POST", body: JSON.stringify(payload) }
     ),
+  deleteVirtualMachine: (orgId, project, namespace, vmName) =>
+    request(
+      `/projects/${encodeURIComponent(orgId)}/${encodeURIComponent(project)}/namespaces/${encodeURIComponent(
+        namespace
+      )}/vmservice/${encodeURIComponent(vmName)}`,
+      { method: "DELETE" }
+    ),
   deploy: (orgId, vcfItemId, payload) =>
     request(`/deploy/${encodeURIComponent(orgId)}/${encodeURIComponent(vcfItemId)}`, {
       method: "POST",

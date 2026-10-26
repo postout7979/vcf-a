@@ -645,6 +645,19 @@ class VcfAutomationClient:
                 )
         return out
 
+    def delete_namespace_virtual_machine(
+        self, org_name: str, endpoint_url: str, namespace: str, name: str
+    ) -> None:
+        gv = self.VM_OPERATOR_VERSIONS[0]
+        resp = self._ns_request(
+            org_name, endpoint_url, "DELETE", f"/apis/{gv}/namespaces/{namespace}/virtualmachines/{name}"
+        )
+        if resp.status_code in (200, 202, 404):
+            return
+        raise VcfAutomationError(
+            f"VirtualMachine delete failed ({resp.status_code}) for '{name}': {resp.text[:400]}"
+        )
+
     def create_namespace_virtual_machine(
         self,
         org_name: str,

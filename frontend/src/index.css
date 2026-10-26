@@ -410,6 +410,16 @@ a {
   cursor: not-allowed;
 }
 
+.btn-danger {
+  background: var(--accent-red-dim);
+  border-color: rgba(217, 116, 144, 0.35);
+  color: var(--accent-red);
+}
+
+.btn-danger:hover {
+  background: rgba(217, 116, 144, 0.16);
+}
+
 /* ---------- Forms ---------- */
 .field {
   display: flex;
@@ -808,6 +818,7 @@ a {
 .tab-content-toolbar {
   display: flex;
   justify-content: flex-end;
+  gap: 8px;
   padding: 12px 0;
 }
 

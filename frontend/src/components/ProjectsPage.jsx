@@ -135,12 +135,13 @@ function OverviewPanel({ ns }) {
   );
 }
 
-function ResourceTable({ kind, rows, onRowClick }) {
+function ResourceTable({ kind, rows, onRowClick, selected, onToggleSelect }) {
   if (kind === "vmservice") {
     return (
       <table className="table">
         <thead>
           <tr>
+            {onToggleSelect && <th style={{ width: 28 }} />}
             <th>이름</th>
             <th>전원</th>
             <th>클래스</th>
@@ -155,6 +156,15 @@ function ResourceTable({ kind, rows, onRowClick }) {
               className="table-row-clickable"
               onClick={() => onRowClick?.(r.name)}
             >
+              {onToggleSelect && (
+                <td onClick={(e) => e.stopPropagation()}>
+                  <input
+                    type="checkbox"
+                    checked={selected?.has(r.name) || false}
+                    onChange={() => onToggleSelect(r.name)}
+                  />
+                </td>
+              )}
               <td className="mono">{r.name}</td>
               <td>{r.powerState || "—"}</td>
               <td>{r.className || "—"}</td>
@@ -288,6 +298,9 @@ export default function ProjectsPage({ orgId, projectId, projects = [] }) {
 
   const [selectedVmName, setSelectedVmName] = useState(null);
   const [showCreateVm, setShowCreateVm] = useState(false);
+  const [selectedVmNames, setSelectedVmNames] = useState(new Set());
+  const [deleting, setDeleting] = useState(false);
+  const [deleteError, setDeleteError] = useState(null);
 
   useEffect(() => {
     setNamespaceName("");
@@ -316,6 +329,53 @@ export default function ProjectsPage({ orgId, projectId, projects = [] }) {
       .catch((e) => setError(e.message))
       .finally(() => setLoadingResources(false));
   }, [orgId, projectId, namespaceName, tab, resourceRefreshKey]);
+
+  // VM Service 상태는 생성/전원 변경이 반영되도록 10초마다 자동 갱신
+  useEffect(() => {
+    if (!orgId || !projectId || !namespaceName || tab !== "vmservice") return;
+    const id = setInterval(() => setResourceRefreshKey((k) => k + 1), 10000);
+    return () => clearInterval(id);
+  }, [orgId, projectId, namespaceName, tab]);
+
+  useEffect(() => {
+    setSelectedVmNames(new Set());
+    setDeleteError(null);
+  }, [namespaceName, tab]);
+
+  const toggleVmSelection = (name) => {
+    setSelectedVmNames((prev) => {
+      const next = new Set(prev);
+      if (next.has(name)) next.delete(name);
+      else next.add(name);
+      return next;
+    });
+  };
+
+  const handleDeleteSelected = async () => {
+    const names = [...selectedVmNames];
+    if (names.length === 0) return;
+    if (
+      !window.confirm(
+        `선택한 VM ${names.length}개를 삭제하시겠습니까? 이 작업은 되돌릴 수 없습니다.\n\n${names.join(", ")}`
+      )
+    ) {
+      return;
+    }
+    setDeleting(true);
+    setDeleteError(null);
+    const failures = [];
+    for (const name of names) {
+      try {
+        await api.deleteVirtualMachine(orgId, projectId, namespaceName, name);
+      } catch (e) {
+        failures.push(`${name}: ${e.message}`);
+      }
+    }
+    setDeleting(false);
+    setSelectedVmNames(new Set());
+    setResourceRefreshKey((k) => k + 1);
+    if (failures.length > 0) setDeleteError(failures.join(" / "));
+  };
 
   if (!orgId) {
     return <div className="empty-state">좌측 상단에서 Organization을 먼저 선택하세요.</div>;
@@ -390,9 +450,25 @@ export default function ProjectsPage({ orgId, projectId, projects = [] }) {
 
             {tab === "vmservice" && (
               <div className="tab-content-toolbar">
+                <button className="btn" onClick={() => setResourceRefreshKey((k) => k + 1)}>
+                  새로고침
+                </button>
+                <button
+                  className="btn btn-danger"
+                  onClick={handleDeleteSelected}
+                  disabled={selectedVmNames.size === 0 || deleting}
+                >
+                  {deleting ? "삭제 중…" : `삭제 (${selectedVmNames.size})`}
+                </button>
                 <button className="btn btn-primary" onClick={() => setShowCreateVm(true)}>
                   + 생성
                 </button>
+              </div>
+            )}
+
+            {tab === "vmservice" && deleteError && (
+              <div className="hint" style={{ color: "var(--accent-red)", marginBottom: 10 }}>
+                삭제 실패: {deleteError}
               </div>
             )}
 
@@ -412,6 +488,8 @@ export default function ProjectsPage({ orgId, projectId, projects = [] }) {
                 kind={tab}
                 rows={resources}
                 onRowClick={tab === "vmservice" ? setSelectedVmName : undefined}
+                selected={tab === "vmservice" ? selectedVmNames : undefined}
+                onToggleSelect={tab === "vmservice" ? toggleVmSelection : undefined}
               />
             )}
           </div>

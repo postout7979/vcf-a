@@ -94,6 +94,23 @@ def list_vm_images(
         raise HTTPException(status_code=502, detail=str(exc)) from exc
 
 
+@router.delete("/{org_id}/{project}/namespaces/{namespace}/vmservice/{vm_name}")
+def delete_virtual_machine(
+    org_id: str,
+    project: str,
+    namespace: str,
+    vm_name: str,
+    session: Session = Depends(get_session),
+):
+    org_name = _org_name(org_id, session)
+    try:
+        endpoint = _namespace_endpoint(org_name, project, namespace)
+        vcf_client.delete_namespace_virtual_machine(org_name, endpoint, namespace, vm_name)
+        return {"ok": True}
+    except VcfAutomationError as exc:
+        raise HTTPException(status_code=502, detail=str(exc)) from exc
+
+
 class CreateVmRequest(BaseModel):
     name: str
     className: str
