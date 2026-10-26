@@ -33,15 +33,21 @@ function loadStylesheet(href) {
   document.head.appendChild(el);
 }
 
-// The ticket this console connects over is short-lived (observed:
-// disconnects with a clean WS close code ~10-30s in, not an error - this
-// looks like a deliberate session time limit on the ticket itself, not a
-// failure). Rather than leave the user staring at a dead screen, fetch a
-// fresh ticket and reconnect automatically when that happens, as long as
-// we have enough context (org/project/namespace/vm) to ask for one.
+// The ticket this console connects over is short-lived - measured across
+// six live sessions, every single one closed with a clean WS code 1000 at
+// 22.0-22.15s after connecting, which is far too consistent to be network
+// variance; it's a deliberate, server-enforced session cap (not something
+// a client-side request parameter appears able to change - tried several
+// ttl/expiration field name guesses on the ticket-creation API, all were
+// accepted but the response never echoes spec back to confirm either
+// way). Rather than wait for it to die and show a visible gap while
+// fetching the next ticket, proactively fetch a fresh one and swap to it
+// a few seconds before the known cutoff - the DISCONNECTED handler below
+// is still the fallback for whenever that doesn't land in time.
 const canRefetchTicket = Boolean(orgId && projectId && namespace && vmName);
 let reconnectAttempts = 0;
-const MAX_RECONNECT_ATTEMPTS = 20;
+const MAX_RECONNECT_ATTEMPTS = 40;
+const SESSION_RENEW_MS = 18000;
 
 async function fetchFreshTicket() {
   const path =
@@ -97,20 +103,29 @@ async function main() {
   setStatus("연결 중...");
   const wmks = WMKS.createWMKS("wmksContainer", {});
   let wasConnected = false;
+  let renewing = false;
+  let renewTimer = null;
 
-  const attemptReconnect = async (reason) => {
+  const clearRenewTimer = () => {
+    if (renewTimer) {
+      clearTimeout(renewTimer);
+      renewTimer = null;
+    }
+  };
+
+  const swapToFreshTicket = async (silent) => {
     if (!canRefetchTicket || reconnectAttempts >= MAX_RECONNECT_ATTEMPTS) {
-      setStatus(reason, "error");
+      if (!silent) setStatus("연결이 종료되었습니다. 다시 보려면 VM 목록에서 웹 콘솔을 다시 여세요.", "error");
       return;
     }
     reconnectAttempts += 1;
-    setStatus("세션이 만료되어 재연결 중...");
+    renewing = true;
+    if (!silent) setStatus("세션 갱신 중...");
     try {
-      await new Promise((resolve) => setTimeout(resolve, 1000));
       wsUrl = await fetchFreshTicket();
-      wasConnected = false;
       wmks.connect(wsUrl);
     } catch (e) {
+      renewing = false;
       setStatus(`재연결 실패: ${e.message}`, "error");
     }
   };
@@ -118,23 +133,39 @@ async function main() {
   wmks.register(WMKS.CONST.Events.CONNECTION_STATE_CHANGE, (evt, data) => {
     switch (data.state) {
       case WMKS.CONST.ConnectionState.CONNECTING:
-        setStatus("연결 중...");
+        if (!renewing) setStatus("연결 중...");
         break;
       case WMKS.CONST.ConnectionState.CONNECTED:
         wasConnected = true;
+        renewing = false;
         reconnectAttempts = 0;
         setStatus(vmName ? `연결됨 - ${vmName}` : "연결됨", "connected");
         btnCad.style.display = "";
         btnFullscreen.style.display = "";
+        // Proactively renew a few seconds before the observed ~22s cutoff
+        // so the swap happens in the background, invisibly, instead of
+        // waiting for a hard disconnect and visible gap.
+        clearRenewTimer();
+        renewTimer = setTimeout(() => swapToFreshTicket(true), SESSION_RENEW_MS);
         break;
       case WMKS.CONST.ConnectionState.DISCONNECTED:
+        clearRenewTimer();
         btnCad.style.display = "none";
         btnFullscreen.style.display = "none";
+        if (renewing) {
+          // Expected: this is the old connection going away as part of a
+          // renewal already in flight (proactive or reactive) - the
+          // CONNECTING/CONNECTED events for the new one follow on their
+          // own; nothing else to do here.
+          break;
+        }
         if (wasConnected) {
-          // Session ended after a working connection - almost certainly
-          // the ticket's own short time limit, not a real failure. Retry
-          // silently instead of making the user reopen the tab.
-          attemptReconnect("연결이 종료되었습니다. 다시 보려면 VM 목록에서 웹 콘솔을 다시 여세요.");
+          // Session ended after a working connection without a renewal
+          // already underway - the proactive timer either fired too late
+          // or this fired earlier than expected. Retry rather than making
+          // the user reopen the tab.
+          wasConnected = false;
+          swapToFreshTicket(false);
         } else {
           setStatus(`연결할 수 없습니다${data.reason ? `: ${data.reason}` : ""}`, "error");
         }
