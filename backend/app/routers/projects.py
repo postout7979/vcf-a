@@ -172,6 +172,7 @@ class CreateVmRequest(BaseModel):
     guestID: Optional[str] = None
     groupName: Optional[str] = None
     zone: Optional[str] = None
+    bootDiskCapacityGb: Optional[int] = None
 
 
 @router.post("/{org_id}/{project}/namespaces/{namespace}/vmservice")
@@ -197,6 +198,7 @@ def create_virtual_machine(
             guest_id=body.guestID,
             group_name=body.groupName,
             zone=body.zone,
+            boot_disk_capacity_gb=body.bootDiskCapacityGb,
         )
     except VcfAutomationError as exc:
         raise HTTPException(status_code=502, detail=str(exc)) from exc

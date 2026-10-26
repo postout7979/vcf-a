@@ -671,6 +671,7 @@ class VcfAutomationClient:
         guest_id: Optional[str] = None,
         group_name: Optional[str] = None,
         zone: Optional[str] = None,
+        boot_disk_capacity_gb: Optional[int] = None,
     ) -> dict[str, Any]:
         gv = self.VM_OPERATOR_VERSIONS[0]
         spec: dict[str, Any] = {
@@ -685,6 +686,11 @@ class VcfAutomationClient:
             spec["guestID"] = guest_id
         if group_name:
             spec["groupName"] = group_name
+        if boot_disk_capacity_gb:
+            # Only takes effect for OVF-deployed VMs - vm-operator's own docs
+            # say this is ignored when the VM is deployed from an ISO with
+            # CD-ROM devices attached.
+            spec["advanced"] = {"bootDiskCapacity": f"{boot_disk_capacity_gb}Gi"}
 
         metadata: dict[str, Any] = {"name": name, "namespace": namespace}
         if zone:

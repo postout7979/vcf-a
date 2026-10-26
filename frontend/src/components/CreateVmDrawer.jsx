@@ -27,6 +27,7 @@ export default function CreateVmDrawer({
   const [zone, setZone] = useState("");
   const [groupName, setGroupName] = useState("");
   const [guestID, setGuestID] = useState("");
+  const [bootDiskGb, setBootDiskGb] = useState("");
 
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState(null);
@@ -76,6 +77,9 @@ export default function CreateVmDrawer({
         payload.guestID = guestID;
         if (zone) payload.zone = zone;
         if (groupName) payload.groupName = groupName;
+      }
+      if (mode === "ovf" && bootDiskGb) {
+        payload.bootDiskCapacityGb = Number(bootDiskGb);
       }
       await api.createVirtualMachine(orgId, projectId, namespace, payload);
       onCreated?.(name);
@@ -172,7 +176,7 @@ export default function CreateVmDrawer({
                   onChange={(e) => setGroupName(e.target.value)}
                   disabled={loadingVmGroups}
                 >
-                  <option value="">선택 안 함</option>
+                  <option value="">없음 (None)</option>
                   {vmGroups.map((g) => (
                     <option key={g.name} value={g.name}>
                       {g.name}
@@ -251,6 +255,34 @@ export default function CreateVmDrawer({
               </div>
             )}
 
+            {mode === "ovf" && (
+              <div className="field">
+                <label>부트 디스크 크기 (GB)</label>
+                <input
+                  type="number"
+                  min="1"
+                  step="1"
+                  value={bootDiskGb}
+                  onChange={(e) => setBootDiskGb(e.target.value)}
+                  placeholder="비워두면 이미지 기본값 사용"
+                />
+                <span className="hint">
+                  이미지의 첫 번째(부트) 디스크 크기를 늘립니다. 줄이거나 VM 실행 중
+                  변경하는 것은 권장되지 않습니다.
+                </span>
+              </div>
+            )}
+
+            {mode === "iso" && (
+              <div className="field">
+                <label>부트 디스크 크기</label>
+                <span className="hint">
+                  ISO(CD-ROM) 배포는 부트 디스크 크기 설정이 적용되지 않습니다 (vSphere
+                  사양). 설치 후 볼륨으로 디스크를 관리하세요.
+                </span>
+              </div>
+            )}
+
             <div className="field">
               <label>Storage Class *</label>
               <select required value={storageClass} onChange={(e) => setStorageClass(e.target.value)}>
@@ -265,13 +297,22 @@ export default function CreateVmDrawer({
               </select>
             </div>
 
-            <div className="field field-checkbox">
-              <input
-                type="checkbox"
-                checked={powerOn}
-                onChange={(e) => setPowerOn(e.target.checked)}
-              />
-              <label>생성 후 전원 켜기</label>
+            <div className="field">
+              <label>전원 상태</label>
+              <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+                <button
+                  type="button"
+                  role="switch"
+                  aria-checked={powerOn}
+                  className={`toggle-switch ${powerOn ? "on" : ""}`}
+                  onClick={() => setPowerOn((p) => !p)}
+                >
+                  <span className="toggle-knob" />
+                </button>
+                <span className="hint">
+                  {powerOn ? "생성 후 전원 켜짐 (Powered On)" : "생성 후 전원 꺼짐 (Powered Off)"}
+                </span>
+              </div>
             </div>
 
             {error && (
