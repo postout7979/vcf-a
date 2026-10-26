@@ -173,6 +173,7 @@ class CreateVmRequest(BaseModel):
     groupName: Optional[str] = None
     zone: Optional[str] = None
     bootDiskCapacityGb: Optional[int] = None
+    isoBootDiskGb: Optional[int] = None
 
 
 @router.post("/{org_id}/{project}/namespaces/{namespace}/vmservice")
@@ -186,6 +187,22 @@ def create_virtual_machine(
     org_name = _org_name(org_id, session)
     try:
         endpoint = _namespace_endpoint(org_name, project, namespace)
+    except VcfAutomationError as exc:
+        raise HTTPException(status_code=502, detail=str(exc)) from exc
+
+    boot_pvc_name = None
+    if body.isoBootDiskGb:
+        # ISO deployments have no OVF-provided boot disk, so it's a separate
+        # PVC created up front and attached to the VM as a volume.
+        boot_pvc_name = f"{body.name}-boot"
+        try:
+            vcf_client.create_namespace_pvc(
+                org_name, endpoint, namespace, boot_pvc_name, body.isoBootDiskGb, body.storageClass
+            )
+        except VcfAutomationError as exc:
+            raise HTTPException(status_code=502, detail=f"부트 디스크(PVC) 생성 실패: {exc}") from exc
+
+    try:
         result = vcf_client.create_namespace_virtual_machine(
             org_name,
             endpoint,
@@ -199,8 +216,14 @@ def create_virtual_machine(
             group_name=body.groupName,
             zone=body.zone,
             boot_disk_capacity_gb=body.bootDiskCapacityGb,
+            boot_disk_pvc_name=boot_pvc_name,
         )
     except VcfAutomationError as exc:
+        if boot_pvc_name:
+            try:
+                vcf_client.delete_namespace_pvc(org_name, endpoint, namespace, boot_pvc_name)
+            except VcfAutomationError:
+                pass  # best-effort cleanup; surface the original VM error below
         raise HTTPException(status_code=502, detail=str(exc)) from exc
 
     session.add(

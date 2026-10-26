@@ -658,6 +658,40 @@ class VcfAutomationClient:
             f"VirtualMachine delete failed ({resp.status_code}) for '{name}': {resp.text[:400]}"
         )
 
+    def create_namespace_pvc(
+        self, org_name: str, endpoint_url: str, namespace: str, name: str, size_gb: int, storage_class: str
+    ) -> dict[str, Any]:
+        """A standalone boot-disk PVC for ISO deployments, which have no
+        OVF-provided boot disk for vm-operator to resize."""
+        body = {
+            "apiVersion": "v1",
+            "kind": "PersistentVolumeClaim",
+            "metadata": {"name": name, "namespace": namespace},
+            "spec": {
+                "accessModes": ["ReadWriteOnce"],
+                "resources": {"requests": {"storage": f"{size_gb}Gi"}},
+                "storageClassName": storage_class,
+            },
+        }
+        resp = self._ns_request(
+            org_name, endpoint_url, "POST", f"/api/v1/namespaces/{namespace}/persistentvolumeclaims", json=body
+        )
+        if resp.status_code >= 400:
+            raise VcfAutomationError(
+                f"PersistentVolumeClaim create failed ({resp.status_code}) for '{name}': {resp.text[:400]}"
+            )
+        return resp.json()
+
+    def delete_namespace_pvc(self, org_name: str, endpoint_url: str, namespace: str, name: str) -> None:
+        resp = self._ns_request(
+            org_name, endpoint_url, "DELETE", f"/api/v1/namespaces/{namespace}/persistentvolumeclaims/{name}"
+        )
+        if resp.status_code in (200, 202, 404):
+            return
+        raise VcfAutomationError(
+            f"PersistentVolumeClaim delete failed ({resp.status_code}) for '{name}': {resp.text[:400]}"
+        )
+
     def create_namespace_virtual_machine(
         self,
         org_name: str,
@@ -672,6 +706,7 @@ class VcfAutomationClient:
         group_name: Optional[str] = None,
         zone: Optional[str] = None,
         boot_disk_capacity_gb: Optional[int] = None,
+        boot_disk_pvc_name: Optional[str] = None,
     ) -> dict[str, Any]:
         gv = self.VM_OPERATOR_VERSIONS[0]
         spec: dict[str, Any] = {
@@ -691,6 +726,13 @@ class VcfAutomationClient:
             # say this is ignored when the VM is deployed from an ISO with
             # CD-ROM devices attached.
             spec["advanced"] = {"bootDiskCapacity": f"{boot_disk_capacity_gb}Gi"}
+        if boot_disk_pvc_name:
+            # ISO deployments have no image-provided boot disk, so the boot
+            # disk is a separate PersistentVolumeClaim attached as a volume
+            # (caller is responsible for creating that PVC first).
+            spec["volumes"] = [
+                {"name": "boot-disk", "persistentVolumeClaim": {"claimName": boot_disk_pvc_name}}
+            ]
 
         metadata: dict[str, Any] = {"name": name, "namespace": namespace}
         if zone:

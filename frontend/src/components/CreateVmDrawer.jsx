@@ -28,6 +28,7 @@ export default function CreateVmDrawer({
   const [groupName, setGroupName] = useState("");
   const [guestID, setGuestID] = useState("");
   const [bootDiskGb, setBootDiskGb] = useState("");
+  const [isoBootDiskGb, setIsoBootDiskGb] = useState("20");
 
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState(null);
@@ -77,6 +78,7 @@ export default function CreateVmDrawer({
         payload.guestID = guestID;
         if (zone) payload.zone = zone;
         if (groupName) payload.groupName = groupName;
+        payload.isoBootDiskGb = Number(isoBootDiskGb);
       }
       if (mode === "ovf" && bootDiskGb) {
         payload.bootDiskCapacityGb = Number(bootDiskGb);
@@ -275,10 +277,19 @@ export default function CreateVmDrawer({
 
             {mode === "iso" && (
               <div className="field">
-                <label>부트 디스크 크기</label>
+                <label>부트 디스크 크기 (GB) *</label>
+                <input
+                  type="number"
+                  required
+                  min="1"
+                  step="1"
+                  value={isoBootDiskGb}
+                  onChange={(e) => setIsoBootDiskGb(e.target.value)}
+                />
                 <span className="hint">
-                  ISO(CD-ROM) 배포는 부트 디스크 크기 설정이 적용되지 않습니다 (vSphere
-                  사양). 설치 후 볼륨으로 디스크를 관리하세요.
+                  ISO 배포는 이미지에 포함된 디스크가 없으므로, 이 크기로 PVC
+                  (PersistentVolumeClaim)를 만들어 부트 디스크로 VM에 연결합니다. 기본값
+                  20GB.
                 </span>
               </div>
             )}
