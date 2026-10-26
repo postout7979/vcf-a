@@ -40,6 +40,7 @@ export default function App() {
 
   const [orgs, setOrgs] = useState([]);
   const [orgId, setOrgId] = useState("");
+  const [projects, setProjects] = useState([]);
   const [projectId, setProjectId] = useState("");
 
   const refreshSyncInfo = useCallback(async () => {
@@ -66,6 +67,19 @@ export default function App() {
     setProjectId(""); // org를 바꾸면 선택된 프로젝트는 무효화
   };
 
+  useEffect(() => {
+    if (!orgId) {
+      setProjects([]);
+      return;
+    }
+    api.listProjects(orgId).then(setProjects).catch(() => setProjects([]));
+  }, [orgId]);
+
+  const handleSelectProject = (nextProjectId) => {
+    setProjectId(nextProjectId);
+    setView("project");
+  };
+
   const meta = PAGE_META[view];
 
   return (
@@ -76,6 +90,9 @@ export default function App() {
         orgs={orgs}
         orgId={orgId}
         onOrgChange={handleOrgChange}
+        projects={projects}
+        projectId={projectId}
+        onSelectProject={handleSelectProject}
       />
       <div className="main">
         <Topbar
@@ -96,11 +113,7 @@ export default function App() {
             />
           )}
           {view === "project" && (
-            <ProjectsPage
-              orgId={orgId}
-              projectId={projectId}
-              onSelectProject={setProjectId}
-            />
+            <ProjectsPage orgId={orgId} projectId={projectId} projects={projects} />
           )}
           {view === "deployments" && <DeploymentsPage />}
           {view === "admin" && (

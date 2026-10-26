@@ -704,70 +704,48 @@ a {
   }
 }
 
-/* ---------- Project page: Project/Namespace selectors + resource tabs ---------- */
-.project-shell {
-  display: grid;
-  grid-template-columns: 240px 1fr;
-  gap: 20px;
-  align-items: start;
-}
-
-.project-side {
+/* ---------- Sidebar: nested project list under "프로젝트" ---------- */
+.nav-sublist {
   display: flex;
   flex-direction: column;
-  gap: 12px;
-  background: var(--panel);
-  border: 1px solid var(--border);
-  border-radius: var(--radius-md);
-  padding: 16px;
+  gap: 1px;
+  margin: 2px 0 6px 10px;
+  padding-left: 10px;
+  border-left: 1px solid var(--border-soft);
 }
 
+.nav-subitem {
+  text-align: left;
+  background: transparent;
+  border: none;
+  border-radius: var(--radius-sm);
+  padding: 6px 8px;
+  font-size: 12px;
+  font-family: var(--font-mono);
+  color: var(--text-muted);
+  width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.nav-subitem:hover {
+  background: var(--panel-alt);
+  color: var(--text);
+}
+
+.nav-subitem.active {
+  background: var(--accent-cyan-dim);
+  color: var(--accent-cyan);
+}
+
+/* ---------- Project page: Namespace selector + resource tabs ---------- */
 .project-main {
   min-width: 0;
 }
 
-.project-main > .field {
+.project-main-full .field {
   margin-bottom: 20px;
-}
-
-.project-list {
-  display: flex;
-  flex-direction: column;
-  gap: 8px;
-}
-
-.project-row {
-  display: flex;
-  flex-direction: column;
-  gap: 2px;
-  text-align: left;
-  background: var(--panel-alt);
-  border: 1px solid var(--border);
-  border-radius: var(--radius-md);
-  padding: 12px 14px;
-  width: 100%;
-  transition: border-color 0.12s ease, background 0.12s ease;
-}
-
-.project-row:hover {
-  border-color: #cabdea;
-}
-
-.project-row.active {
-  border-color: var(--accent-cyan);
-  background: var(--accent-cyan-dim);
-}
-
-.project-row-name {
-  font-family: var(--font-mono);
-  font-size: 13px;
-  font-weight: 600;
-  color: var(--text);
-}
-
-.project-row-desc {
-  font-size: 12px;
-  color: var(--text-secondary);
 }
 
 .badge-ok {
@@ -827,8 +805,59 @@ a {
   padding: 4px 16px;
 }
 
+/* ---------- Namespace Overview tab (status-forward layout) ---------- */
+.ns-overview-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-start;
+  gap: 12px;
+  margin-bottom: 20px;
+}
+
+.ns-overview-name {
+  font-size: 18px;
+  font-weight: 700;
+  color: var(--text);
+  margin-bottom: 4px;
+}
+
+.status-pill {
+  font-family: var(--font-mono);
+  font-size: 12px;
+  font-weight: 600;
+  padding: 5px 14px;
+  border-radius: 20px;
+  border: 1px solid var(--border);
+  white-space: nowrap;
+}
+
+.status-pill.status-ok {
+  color: var(--accent-cyan);
+  background: var(--accent-cyan-dim);
+  border-color: rgba(63, 171, 147, 0.35);
+}
+
+.status-pill.status-warn {
+  color: var(--accent-amber);
+  background: var(--accent-amber-dim);
+  border-color: rgba(207, 154, 59, 0.35);
+}
+
+.status-pill.status-err {
+  color: var(--accent-red);
+  background: var(--accent-red-dim);
+  border-color: rgba(217, 116, 144, 0.35);
+}
+
+.ns-stat-grid {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 14px;
+  margin-bottom: 18px;
+}
+
 @media (max-width: 900px) {
-  .project-shell {
-    grid-template-columns: 1fr;
+  .ns-stat-grid {
+    grid-template-columns: repeat(3, 1fr);
   }
 }

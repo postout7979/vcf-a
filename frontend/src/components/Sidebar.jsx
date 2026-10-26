@@ -6,7 +6,16 @@ const NAV_ITEMS = [
   { key: "admin", label: "관리자" },
 ];
 
-export default function Sidebar({ view, onNavigate, orgs, orgId, onOrgChange }) {
+export default function Sidebar({
+  view,
+  onNavigate,
+  orgs,
+  orgId,
+  onOrgChange,
+  projects,
+  projectId,
+  onSelectProject,
+}) {
   return (
     <aside className="sidebar">
       <div className="brand">
@@ -28,14 +37,30 @@ export default function Sidebar({ view, onNavigate, orgs, orgId, onOrgChange }) 
 
       <nav className="nav">
         {NAV_ITEMS.map((item) => (
-          <button
-            key={item.key}
-            className={`nav-item ${view === item.key ? "active" : ""}`}
-            onClick={() => onNavigate(item.key)}
-          >
-            <span className="nav-dot" />
-            {item.label}
-          </button>
+          <div key={item.key}>
+            <button
+              className={`nav-item ${view === item.key ? "active" : ""}`}
+              onClick={() => onNavigate(item.key)}
+            >
+              <span className="nav-dot" />
+              {item.label}
+            </button>
+
+            {item.key === "project" && orgId && projects.length > 0 && (
+              <div className="nav-sublist">
+                {projects.map((p) => (
+                  <button
+                    key={p.name}
+                    className={`nav-subitem ${projectId === p.name ? "active" : ""}`}
+                    onClick={() => onSelectProject(p.name)}
+                    title={p.description || p.name}
+                  >
+                    {p.name}
+                  </button>
+                ))}
+              </div>
+            )}
+          </div>
         ))}
       </nav>
 
