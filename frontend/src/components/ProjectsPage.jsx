@@ -2,12 +2,81 @@ import { useEffect, useState } from "react";
 import { api } from "../api/client.js";
 
 const TABS = [
+  { key: "overview", label: "Overview" },
   { key: "vmservice", label: "VM Service" },
   { key: "kubernetes", label: "Kubernetes" },
   { key: "containers", label: "Containers" },
   { key: "volumes", label: "Volumes" },
   { key: "loadbalancer", label: "Load Balancer" },
 ];
+
+function OverviewPanel({ ns }) {
+  if (!ns) return null;
+  return (
+    <div>
+      <div className="card-top">
+        <div className="card-title mono">{ns.name}</div>
+        {ns.phase && (
+          <span className={`badge ${ns.phase === "Created" ? "badge-ok" : ""}`}>{ns.phase}</span>
+        )}
+      </div>
+      <div className="hint" style={{ marginBottom: 14 }}>
+        클래스: {ns.className || "—"} · 리전: {ns.regionName || "—"} · VPC: {ns.vpcName || "—"}
+      </div>
+
+      {ns.zones?.length > 0 && (
+        <div style={{ marginBottom: 14 }}>
+          <div className="stat-label" style={{ marginBottom: 6 }}>
+            Zones
+          </div>
+          <div className="chip-row">
+            {ns.zones.map((z) => (
+              <span className="chip" key={z.name}>
+                {z.name} · CPU {z.cpuLimit || "—"} · MEM {z.memoryLimit || "—"}
+              </span>
+            ))}
+          </div>
+        </div>
+      )}
+
+      {ns.storageClasses?.length > 0 && (
+        <div style={{ marginBottom: 14 }}>
+          <div className="stat-label" style={{ marginBottom: 6 }}>
+            Storage Classes
+          </div>
+          <div className="chip-row">
+            {ns.storageClasses.map((s) => (
+              <span className="chip" key={s.name}>
+                {s.name} ({s.limit || "—"})
+              </span>
+            ))}
+          </div>
+        </div>
+      )}
+
+      {ns.vmClasses?.length > 0 && (
+        <div style={{ marginBottom: 14 }}>
+          <div className="stat-label" style={{ marginBottom: 6 }}>
+            VM Classes
+          </div>
+          <div className="chip-row">
+            {ns.vmClasses.map((v) => (
+              <span className="chip" key={v}>
+                {v}
+              </span>
+            ))}
+          </div>
+        </div>
+      )}
+
+      {ns.endpointUrl && (
+        <div className="hint mono" style={{ wordBreak: "break-all" }}>
+          {ns.endpointUrl}
+        </div>
+      )}
+    </div>
+  );
+}
 
 function ResourceTable({ kind, rows }) {
   if (kind === "vmservice") {
@@ -148,12 +217,13 @@ function ResourceTable({ kind, rows }) {
 export default function ProjectsPage({ orgId, projectId, onSelectProject }) {
   const [projects, setProjects] = useState([]);
   const [loadingProjects, setLoadingProjects] = useState(false);
+  const [projectsError, setProjectsError] = useState(null);
 
   const [namespaces, setNamespaces] = useState([]);
   const [loadingNamespaces, setLoadingNamespaces] = useState(false);
   const [namespaceName, setNamespaceName] = useState("");
 
-  const [tab, setTab] = useState("vmservice");
+  const [tab, setTab] = useState("overview");
   const [resources, setResources] = useState([]);
   const [loadingResources, setLoadingResources] = useState(false);
   const [error, setError] = useState(null);
@@ -164,28 +234,33 @@ export default function ProjectsPage({ orgId, projectId, onSelectProject }) {
       return;
     }
     setLoadingProjects(true);
+    setProjectsError(null);
     api
       .listProjects(orgId)
       .then(setProjects)
-      .catch((e) => setError(e.message))
+      .catch((e) => setProjectsError(e.message))
       .finally(() => setLoadingProjects(false));
   }, [orgId]);
 
   useEffect(() => {
     setNamespaceName("");
     setNamespaces([]);
+    setTab("overview");
     if (!orgId || !projectId) return;
     setLoadingNamespaces(true);
     api
       .listNamespaces(orgId, projectId)
-      .then(setNamespaces)
+      .then((list) => {
+        setNamespaces(list);
+        if (list.length === 1) setNamespaceName(list[0].name);
+      })
       .catch((e) => setError(e.message))
       .finally(() => setLoadingNamespaces(false));
   }, [orgId, projectId]);
 
   useEffect(() => {
     setResources([]);
-    if (!orgId || !projectId || !namespaceName) return;
+    if (!orgId || !projectId || !namespaceName || tab === "overview") return;
     setLoadingResources(true);
     setError(null);
     api
@@ -199,27 +274,40 @@ export default function ProjectsPage({ orgId, projectId, onSelectProject }) {
     return <div className="empty-state">좌측 상단에서 Organization을 먼저 선택하세요.</div>;
   }
 
+  const selectedNamespace = namespaces.find((n) => n.name === namespaceName);
+
   return (
     <div className="project-shell">
       <div className="project-side">
-        <div className="field">
-          <label>프로젝트</label>
-          <select
-            value={projectId}
-            onChange={(e) => onSelectProject(e.target.value)}
-            disabled={loadingProjects}
-          >
-            <option value="">프로젝트 선택…</option>
-            {projects.map((p) => (
-              <option key={p.name} value={p.name}>
-                {p.name}
-              </option>
-            ))}
-          </select>
+        <div className="panel-section-title">프로젝트</div>
+        {loadingProjects && <div className="empty-state">프로젝트 불러오는 중…</div>}
+        {projectsError && (
+          <div className="hint" style={{ color: "var(--accent-red)" }}>
+            {projectsError}
+          </div>
+        )}
+        {!loadingProjects && !projectsError && projects.length === 0 && (
+          <div className="empty-state">이 Org에 조회된 프로젝트가 없습니다.</div>
+        )}
+        <div className="project-list">
+          {projects.map((p) => (
+            <button
+              key={p.name}
+              className={`project-row ${projectId === p.name ? "active" : ""}`}
+              onClick={() => onSelectProject(p.name)}
+            >
+              <div className="project-row-name">{p.name}</div>
+              {p.description && <div className="project-row-desc">{p.description}</div>}
+            </button>
+          ))}
         </div>
+      </div>
+
+      <div className="project-main">
+        {!projectId && <div className="empty-state">왼쪽에서 프로젝트를 선택하세요.</div>}
 
         {projectId && (
-          <div className="field">
+          <div className="field" style={{ maxWidth: 320 }}>
             <label>vSphere Namespace</label>
             <select
               value={namespaceName}
@@ -238,16 +326,11 @@ export default function ProjectsPage({ orgId, projectId, onSelectProject }) {
             )}
           </div>
         )}
-      </div>
 
-      <div className="project-main">
-        {!projectId && (
-          <div className="empty-state">왼쪽에서 프로젝트를 선택하세요.</div>
-        )}
-        {projectId && !namespaceName && (
+        {projectId && !namespaceName && !loadingNamespaces && namespaces.length > 0 && (
           <div className="empty-state">
-            왼쪽에서 vSphere Namespace를 선택하면 VM Service / Kubernetes / Containers /
-            Volumes / Load Balancer 정보를 확인할 수 있습니다.
+            위에서 vSphere Namespace를 선택하면 Overview / VM Service / Kubernetes /
+            Containers / Volumes / Load Balancer 정보를 확인할 수 있습니다.
           </div>
         )}
 
@@ -266,16 +349,20 @@ export default function ProjectsPage({ orgId, projectId, onSelectProject }) {
             </div>
 
             <div className="tab-content">
-              {loadingResources && <div className="empty-state">불러오는 중…</div>}
-              {!loadingResources && error && (
+              {tab === "overview" && <OverviewPanel ns={selectedNamespace} />}
+
+              {tab !== "overview" && loadingResources && (
+                <div className="empty-state">불러오는 중…</div>
+              )}
+              {tab !== "overview" && !loadingResources && error && (
                 <div className="hint" style={{ color: "var(--accent-red)" }}>
                   {error}
                 </div>
               )}
-              {!loadingResources && !error && resources.length === 0 && (
+              {tab !== "overview" && !loadingResources && !error && resources.length === 0 && (
                 <div className="empty-state">이 Namespace에는 해당 항목이 없습니다.</div>
               )}
-              {!loadingResources && !error && resources.length > 0 && (
+              {tab !== "overview" && !loadingResources && !error && resources.length > 0 && (
                 <ResourceTable kind={tab} rows={resources} />
               )}
             </div>
