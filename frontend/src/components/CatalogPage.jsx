@@ -2,36 +2,25 @@ import { useEffect, useState } from "react";
 import { api } from "../api/client.js";
 import DeployDrawer from "./DeployDrawer.jsx";
 
-export default function CatalogPage({ onDeployed }) {
-  const [orgs, setOrgs] = useState([]);
-  const [orgId, setOrgId] = useState(""); // "" = all orgs
-  const [project, setProject] = useState(""); // "" = all projects
+export default function CatalogPage({ orgId, projectId, onDeployed }) {
   const [items, setItems] = useState([]);
-  const [loading, setLoading] = useState(true);
+  const [loading, setLoading] = useState(false);
   const [query, setQuery] = useState("");
   const [selected, setSelected] = useState(null);
 
-  useEffect(() => {
-    api.listOrgs().then(setOrgs);
-  }, []);
-
   const load = () => {
+    if (!orgId || !projectId) {
+      setItems([]);
+      return;
+    }
     setLoading(true);
     api
-      .listCatalog(orgId || undefined, project || undefined)
+      .listCatalog(orgId, projectId)
       .then(setItems)
       .finally(() => setLoading(false));
   };
 
-  useEffect(load, [orgId, project]);
-
-  // 프로젝트 목록은 현재 org 범위의 항목에서 도출 (project 필터 적용 전 전체 기준)
-  const [projects, setProjects] = useState([]);
-  useEffect(() => {
-    api.listCatalog(orgId || undefined).then((all) => {
-      setProjects([...new Set(all.map((i) => i.projectId).filter(Boolean))].sort());
-    });
-  }, [orgId]);
+  useEffect(load, [orgId, projectId]);
 
   const filtered = items.filter(
     (i) =>
@@ -39,31 +28,28 @@ export default function CatalogPage({ onDeployed }) {
       i.description?.toLowerCase().includes(query.toLowerCase())
   );
 
+  if (!orgId) {
+    return (
+      <div className="empty-state">
+        좌측 상단에서 Organization을 먼저 선택하세요.
+      </div>
+    );
+  }
+
+  if (!projectId) {
+    return (
+      <div className="empty-state">
+        배포할 프로젝트를 먼저 선택하세요. &quot;프로젝트&quot; 메뉴에서 프로젝트를
+        선택하면 해당 프로젝트의 카탈로그가 표시됩니다.
+      </div>
+    );
+  }
+
   return (
     <div>
       <div style={{ display: "flex", gap: 12, marginBottom: 20, flexWrap: "wrap" }}>
-        <div className="field" style={{ maxWidth: 220, marginBottom: 0 }}>
-          <select value={orgId} onChange={(e) => {
-              setOrgId(e.target.value);
-              setProject("");
-            }}>
-            <option value="">전체 Org</option>
-            {orgs.map((o) => (
-              <option key={o.orgId} value={o.orgId}>
-                {o.name}
-              </option>
-            ))}
-          </select>
-        </div>
-        <div className="field" style={{ maxWidth: 220, marginBottom: 0 }}>
-          <select value={project} onChange={(e) => setProject(e.target.value)}>
-            <option value="">전체 프로젝트</option>
-            {projects.map((p) => (
-              <option key={p} value={p}>
-                {p}
-              </option>
-            ))}
-          </select>
+        <div className="hint" style={{ alignSelf: "center" }}>
+          프로젝트: <strong>{projectId}</strong>
         </div>
         <div className="field" style={{ maxWidth: 340, marginBottom: 0, flex: 1 }}>
           <input
@@ -75,17 +61,16 @@ export default function CatalogPage({ onDeployed }) {
         </div>
       </div>
 
-      {orgs.length === 0 && !loading && (
+      {loading && <div className="empty-state">카탈로그 불러오는 중…</div>}
+
+      {!loading && items.length === 0 && (
         <div className="empty-state">
-          동기화된 Organization이 없습니다. 관리자 메뉴에서 sync를 실행해보세요. (All Apps
-          모드는 provider 로그인 후 각 org 토큰으로 CCI API의 프로젝트별 카탈로그를
-          조회합니다.)
+          이 프로젝트에 동기화된 카탈로그 항목이 없습니다. 관리자 메뉴에서 sync를
+          실행해보세요.
         </div>
       )}
 
-      {loading && <div className="empty-state">카탈로그 불러오는 중…</div>}
-
-      {!loading && orgs.length > 0 && filtered.length === 0 && (
+      {!loading && items.length > 0 && filtered.length === 0 && (
         <div className="empty-state">조건에 맞는 카탈로그 항목이 없습니다.</div>
       )}
 
@@ -98,8 +83,7 @@ export default function CatalogPage({ onDeployed }) {
             </div>
             <div className="card-desc">{item.description || "설명 없음"}</div>
             <div className="hint" style={{ marginTop: -4 }}>
-              Org: {item.orgName || item.orgId}
-              {item.projectId ? ` · 프로젝트: ${item.projectId}` : ""}
+              Org: {item.orgName || item.orgId} · 프로젝트: {item.projectId}
             </div>
             <div className="card-bottom">
               <span className="card-version">v{item.version || "—"}</span>
@@ -114,6 +98,7 @@ export default function CatalogPage({ onDeployed }) {
       {selected && (
         <DeployDrawer
           item={selected}
+          projectId={projectId}
           onClose={() => setSelected(null)}
           onSubmitted={(name) => onDeployed?.(name)}
         />

@@ -3,6 +3,7 @@ import Sidebar from "./components/Sidebar.jsx";
 import Topbar from "./components/Topbar.jsx";
 import DashboardPage from "./components/DashboardPage.jsx";
 import CatalogPage from "./components/CatalogPage.jsx";
+import ProjectsPage from "./components/ProjectsPage.jsx";
 import DeploymentsPage from "./components/DeploymentsPage.jsx";
 import AdminPage from "./components/AdminPage.jsx";
 import Toast from "./components/Toast.jsx";
@@ -16,6 +17,10 @@ const PAGE_META = {
   catalog: {
     title: "카탈로그",
     subtitle: "VCF 9 Automation VM Apps 카탈로그 (자동 동기화됨)",
+  },
+  project: {
+    title: "프로젝트",
+    subtitle: "프로젝트 선택 및 vSphere Namespace 확인 - VM Service는 선택한 프로젝트에 배포됩니다",
   },
   deployments: {
     title: "배포 이력",
@@ -33,6 +38,10 @@ export default function App() {
   const [history, setHistory] = useState([]);
   const [toast, setToast] = useState(null);
 
+  const [orgs, setOrgs] = useState([]);
+  const [orgId, setOrgId] = useState("");
+  const [projectId, setProjectId] = useState("");
+
   const refreshSyncInfo = useCallback(async () => {
     const [s, h] = await Promise.all([api.syncStatus(), api.syncHistory(24)]);
     setStatus(s);
@@ -45,11 +54,29 @@ export default function App() {
     return () => clearInterval(id);
   }, [refreshSyncInfo]);
 
+  useEffect(() => {
+    api.listOrgs().then((list) => {
+      setOrgs(list);
+      setOrgId((current) => current || list[0]?.orgId || "");
+    });
+  }, []);
+
+  const handleOrgChange = (nextOrgId) => {
+    setOrgId(nextOrgId);
+    setProjectId(""); // org를 바꾸면 선택된 프로젝트는 무효화
+  };
+
   const meta = PAGE_META[view];
 
   return (
     <div className="app-shell">
-      <Sidebar view={view} onNavigate={setView} />
+      <Sidebar
+        view={view}
+        onNavigate={setView}
+        orgs={orgs}
+        orgId={orgId}
+        onOrgChange={handleOrgChange}
+      />
       <div className="main">
         <Topbar
           title={meta.title}
@@ -61,9 +88,18 @@ export default function App() {
           {view === "dashboard" && <DashboardPage />}
           {view === "catalog" && (
             <CatalogPage
+              orgId={orgId}
+              projectId={projectId}
               onDeployed={(name) =>
                 setToast({ type: "success", message: `"${name}" 배포 요청을 제출했습니다.` })
               }
+            />
+          )}
+          {view === "project" && (
+            <ProjectsPage
+              orgId={orgId}
+              projectId={projectId}
+              onSelectProject={setProjectId}
             />
           )}
           {view === "deployments" && <DeploymentsPage />}

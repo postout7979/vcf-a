@@ -52,6 +52,10 @@ TENANT_CONTEXT_HEADER = "x-vmware-vcloud-tenant-context"
 # Resource groups (from the CCI API reference on developer.broadcom.com)
 CATALOG_GROUP = "apis/catalog.cci.vmware.com/v1alpha1"   # CatalogItem, Instance, ...
 PROJECT_GROUP = "apis/project.cci.vmware.com/v1alpha2"   # Project
+# vSphere Namespace (aka "Supervisor Namespace"), one or more per Project.
+# VM Service deployments run inside a Project's namespace, so this is shown
+# alongside the Project to confirm the target before deploying.
+INFRASTRUCTURE_GROUP = "apis/infrastructure.cci.vmware.com/v1alpha3"  # SupervisorNamespace
 # The URL prefix in front of /apis is not stated in the public docs, so it is
 # auto-detected (see _cci_prefix) unless VCF_CCI_BASE_PATH is set.
 CCI_PREFIX_CANDIDATES = ["/cci/kubernetes", ""]
@@ -397,6 +401,73 @@ class VcfAutomationClient:
         if settings.vcf_automation_project_id:
             names = [n for n in names if n == settings.vcf_automation_project_id]
         return names
+
+    def list_projects_detail(self, org_name: str) -> list[dict[str, Any]]:
+        """Projects with their description/uid, for the Project menu (live call,
+        not cached in the DB like the catalog is)."""
+        prefix = self._cci_prefix(org_name)
+        items = self._cci_list(org_name, f"{prefix}/{PROJECT_GROUP}/projects")
+        out: list[dict[str, Any]] = []
+        for it in items:
+            meta = it.get("metadata", {}) or {}
+            name = meta.get("name")
+            if not name:
+                continue
+            if settings.vcf_automation_project_id and name != settings.vcf_automation_project_id:
+                continue
+            out.append(
+                {
+                    "name": name,
+                    "description": (it.get("spec") or {}).get("description", "") or "",
+                    "uid": meta.get("uid", ""),
+                }
+            )
+        return out
+
+    # ------------------------------------------------------------------
+    # vSphere Namespace (SupervisorNamespace), scoped to one Project
+    # ------------------------------------------------------------------
+    def _supervisor_namespaces_path(self, org_name: str, project: str) -> str:
+        prefix = self._cci_prefix(org_name)
+        return f"{prefix}/{INFRASTRUCTURE_GROUP}/namespaces/{project}/supervisornamespaces"
+
+    def list_supervisor_namespaces(self, org_name: str, project: str) -> list[dict[str, Any]]:
+        items = self._cci_list(org_name, self._supervisor_namespaces_path(org_name, project))
+        out: list[dict[str, Any]] = []
+        for it in items:
+            meta = it.get("metadata", {}) or {}
+            spec = it.get("spec", {}) or {}
+            status = it.get("status", {}) or {}
+            out.append(
+                {
+                    "name": meta.get("name"),
+                    "project": meta.get("namespace"),
+                    "className": spec.get("className", ""),
+                    "description": spec.get("description", "") or "",
+                    "regionName": spec.get("regionName", ""),
+                    "vpcName": status.get("vpcName") or spec.get("vpcName") or "",
+                    "phase": status.get("phase", ""),
+                    "endpointUrl": status.get("namespaceEndpointURL", ""),
+                    "zones": [
+                        {
+                            "name": z.get("name"),
+                            "cpuLimit": z.get("cpuLimit"),
+                            "memoryLimit": z.get("memoryLimit"),
+                            "networkStack": z.get("networkStack"),
+                        }
+                        for z in (status.get("zones") or [])
+                    ],
+                    "storageClasses": [
+                        {"name": s.get("name"), "limit": s.get("limit")}
+                        for s in (status.get("storageClasses") or [])
+                    ],
+                    "vmClasses": [
+                        v.get("name") for v in (status.get("vmClasses") or []) if v.get("name")
+                    ],
+                    "createdAt": meta.get("creationTimestamp"),
+                }
+            )
+        return out
 
     def _catalog_items_path(self, org_name: str, project: str) -> str:
         prefix = self._cci_prefix(org_name)

@@ -15,6 +15,7 @@ router = APIRouter(prefix="/api/deploy", tags=["deploy"])
 class DeployRequest(BaseModel):
     deploymentName: str
     inputs: dict[str, Any]
+    projectId: str
     requestedBy: str = ""
     reason: str = ""
 
@@ -30,6 +31,16 @@ def submit_deployment(
     ).first()
     if not item or not item.is_active:
         raise HTTPException(status_code=404, detail="Catalog item not found.")
+
+    if not body.projectId or body.projectId != item.project_id:
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                f"Selected project '{body.projectId or '(none)'}' does not match this "
+                f"catalog item's project '{item.project_id}'. Select the matching project "
+                "in the Project menu before deploying."
+            ),
+        )
 
     record = DeploymentRecord(
         org_id=org_id,

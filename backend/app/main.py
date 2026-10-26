@@ -5,7 +5,7 @@ from fastapi.middleware.cors import CORSMiddleware
 
 from app.config import settings
 from app.db import init_db
-from app.routers import admin, catalog, dashboard, deploy
+from app.routers import admin, catalog, dashboard, deploy, projects
 from app.scheduler import scheduler, start_scheduler
 from app.sync_service import run_sync
 
@@ -25,6 +25,7 @@ app.include_router(catalog.router)
 app.include_router(deploy.router)
 app.include_router(admin.router)
 app.include_router(dashboard.router)
+app.include_router(projects.router)
 
 
 @app.on_event("startup")

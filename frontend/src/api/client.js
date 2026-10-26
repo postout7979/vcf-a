@@ -30,6 +30,9 @@ export const api = {
   },
   getCatalogItem: (orgId, vcfItemId) =>
     request(`/catalog/${encodeURIComponent(orgId)}/${encodeURIComponent(vcfItemId)}`),
+  listProjects: (orgId) => request(`/projects?org_id=${encodeURIComponent(orgId)}`),
+  listNamespaces: (orgId, project) =>
+    request(`/projects/${encodeURIComponent(orgId)}/${encodeURIComponent(project)}/namespaces`),
   deploy: (orgId, vcfItemId, payload) =>
     request(`/deploy/${encodeURIComponent(orgId)}/${encodeURIComponent(vcfItemId)}`, {
       method: "POST",

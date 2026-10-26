@@ -11,7 +11,7 @@ function defaultsFromSchema(schema) {
   return out;
 }
 
-export default function DeployDrawer({ item, onClose, onSubmitted }) {
+export default function DeployDrawer({ item, projectId, onClose, onSubmitted }) {
   const [detail, setDetail] = useState(null);
   const [loading, setLoading] = useState(true);
   const [submitting, setSubmitting] = useState(false);
@@ -40,8 +40,11 @@ export default function DeployDrawer({ item, onClose, onSubmitted }) {
     };
   }, [item.orgId, item.vcfItemId]);
 
+  const projectMismatch = Boolean(item.projectId) && item.projectId !== projectId;
+
   const handleSubmit = async (e) => {
     e.preventDefault();
+    if (projectMismatch) return;
     setSubmitting(true);
     setError(null);
     try {
@@ -50,6 +53,7 @@ export default function DeployDrawer({ item, onClose, onSubmitted }) {
         inputs: Object.fromEntries(
           Object.entries(values).map(([k, v]) => [k, Array.isArray(v) ? v.filter(Boolean) : v])
         ),
+        projectId,
         requestedBy,
       });
       onSubmitted?.(deploymentName);
@@ -76,6 +80,19 @@ export default function DeployDrawer({ item, onClose, onSubmitted }) {
             ×
           </button>
         </div>
+
+        <div className="hint" style={{ marginBottom: 14 }}>
+          대상 프로젝트: <strong>{projectId || "(선택 안 됨)"}</strong>
+        </div>
+
+        {projectMismatch && (
+          <div className="hint" style={{ color: "var(--accent-red)", marginBottom: 14 }}>
+            이 카탈로그 항목은 프로젝트 &quot;{item.projectId}&quot; 소속입니다. 현재
+            선택된 프로젝트 &quot;{projectId}&quot;와 일치하지 않아 배포할 수 없습니다.
+            &quot;프로젝트&quot; 메뉴에서 &quot;{item.projectId}&quot;를 선택한 뒤 다시
+            시도하세요.
+          </div>
+        )}
 
         {loading && <div className="empty-state">스키마 불러오는 중…</div>}
 
@@ -108,7 +125,7 @@ export default function DeployDrawer({ item, onClose, onSubmitted }) {
               </div>
             )}
 
-            <button type="submit" className="btn btn-primary" disabled={submitting}>
+            <button type="submit" className="btn btn-primary" disabled={submitting || projectMismatch}>
               {submitting ? "요청 제출 중…" : "배포 요청"}
             </button>
           </form>
