@@ -61,6 +61,39 @@ class SyncEvent(SQLModel, table=True):
     details_json: list = Field(default_factory=list, sa_column=Column(JSON))
 
 
+class PortalVirtualMachine(SQLModel, table=True):
+    """Registry of VM Service VMs created through this portal's Create VM
+    form - used to restrict deletion so existing, portal-unaware VMs can't
+    be removed from here."""
+
+    __table_args__ = (
+        UniqueConstraint("org_id", "project", "namespace", "vm_name", name="uq_portal_vm"),
+    )
+
+    id: Optional[int] = Field(default=None, primary_key=True)
+    org_id: str = Field(index=True)
+    project: str
+    namespace: str
+    vm_name: str
+    created_at: datetime = Field(default_factory=datetime.utcnow)
+
+
+class PortalVmGroup(SQLModel, table=True):
+    """Same registry concept as PortalVirtualMachine, for VM Groups created
+    through the VM Group tab."""
+
+    __table_args__ = (
+        UniqueConstraint("org_id", "project", "namespace", "group_name", name="uq_portal_vmgroup"),
+    )
+
+    id: Optional[int] = Field(default=None, primary_key=True)
+    org_id: str = Field(index=True)
+    project: str
+    namespace: str
+    group_name: str
+    created_at: datetime = Field(default_factory=datetime.utcnow)
+
+
 class DeploymentRecord(SQLModel, table=True):
     id: Optional[int] = Field(default=None, primary_key=True)
     org_id: str = Field(index=True, default="")

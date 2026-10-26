@@ -2,10 +2,12 @@ import { useEffect, useState } from "react";
 import { api } from "../api/client.js";
 import VmDetailDrawer from "./VmDetailDrawer.jsx";
 import CreateVmDrawer from "./CreateVmDrawer.jsx";
+import CreateVmGroupDrawer from "./CreateVmGroupDrawer.jsx";
 
 const TABS = [
   { key: "overview", label: "Overview" },
   { key: "vmservice", label: "VM Service" },
+  { key: "vmgroup", label: "VM Group" },
   { key: "kubernetes", label: "Kubernetes" },
   { key: "containers", label: "Containers" },
   { key: "volumes", label: "Volumes" },
@@ -158,11 +160,17 @@ function ResourceTable({ kind, rows, onRowClick, selected, onToggleSelect }) {
             >
               {onToggleSelect && (
                 <td onClick={(e) => e.stopPropagation()}>
-                  <input
-                    type="checkbox"
-                    checked={selected?.has(r.name) || false}
-                    onChange={() => onToggleSelect(r.name)}
-                  />
+                  {r.createdByPortal ? (
+                    <input
+                      type="checkbox"
+                      checked={selected?.has(r.name) || false}
+                      onChange={() => onToggleSelect(r.name)}
+                    />
+                  ) : (
+                    <span className="hint" title="이 포탈에서 생성한 VM만 삭제할 수 있습니다.">
+                      —
+                    </span>
+                  )}
                 </td>
               )}
               <td className="mono">{r.name}</td>
@@ -170,6 +178,55 @@ function ResourceTable({ kind, rows, onRowClick, selected, onToggleSelect }) {
               <td>{r.className || "—"}</td>
               <td className="mono">{r.imageName || "—"}</td>
               <td className="mono">{r.primaryIp || "—"}</td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
+    );
+  }
+
+  if (kind === "vmgroup") {
+    return (
+      <table className="table">
+        <thead>
+          <tr>
+            {onToggleSelect && <th style={{ width: 28 }} />}
+            <th>이름</th>
+            <th>멤버</th>
+            <th>생성 주체</th>
+          </tr>
+        </thead>
+        <tbody>
+          {rows.map((r) => (
+            <tr key={r.name}>
+              {onToggleSelect && (
+                <td onClick={(e) => e.stopPropagation()}>
+                  {r.createdByPortal ? (
+                    <input
+                      type="checkbox"
+                      checked={selected?.has(r.name) || false}
+                      onChange={() => onToggleSelect(r.name)}
+                    />
+                  ) : (
+                    <span className="hint" title="이 포탈에서 생성한 VM Group만 삭제할 수 있습니다.">
+                      —
+                    </span>
+                  )}
+                </td>
+              )}
+              <td className="mono">{r.name}</td>
+              <td>
+                {r.memberCount}
+                {r.members?.length > 0 && (
+                  <span className="hint"> ({r.members.map((m) => m.name).join(", ")})</span>
+                )}
+              </td>
+              <td>
+                <span className={`badge ${r.createdByPortal ? "badge-ok" : ""}`}>
+                  {r.createdByPortal ? "포탈 생성" : "외부"}
+                </span>
+                {r.ownedByOther && <div className="hint">다른 리소스에서 관리</div>}
+              </td>
             </tr>
           ))}
         </tbody>
@@ -302,6 +359,11 @@ export default function ProjectsPage({ orgId, projectId, projects = [] }) {
   const [deleting, setDeleting] = useState(false);
   const [deleteError, setDeleteError] = useState(null);
 
+  const [showCreateVmGroup, setShowCreateVmGroup] = useState(false);
+  const [selectedVmGroupNames, setSelectedVmGroupNames] = useState(new Set());
+  const [deletingGroups, setDeletingGroups] = useState(false);
+  const [groupDeleteError, setGroupDeleteError] = useState(null);
+
   useEffect(() => {
     setNamespaceName("");
     setNamespaces([]);
@@ -340,10 +402,21 @@ export default function ProjectsPage({ orgId, projectId, projects = [] }) {
   useEffect(() => {
     setSelectedVmNames(new Set());
     setDeleteError(null);
+    setSelectedVmGroupNames(new Set());
+    setGroupDeleteError(null);
   }, [namespaceName, tab]);
 
   const toggleVmSelection = (name) => {
     setSelectedVmNames((prev) => {
+      const next = new Set(prev);
+      if (next.has(name)) next.delete(name);
+      else next.add(name);
+      return next;
+    });
+  };
+
+  const toggleVmGroupSelection = (name) => {
+    setSelectedVmGroupNames((prev) => {
       const next = new Set(prev);
       if (next.has(name)) next.delete(name);
       else next.add(name);
@@ -375,6 +448,32 @@ export default function ProjectsPage({ orgId, projectId, projects = [] }) {
     setSelectedVmNames(new Set());
     setResourceRefreshKey((k) => k + 1);
     if (failures.length > 0) setDeleteError(failures.join(" / "));
+  };
+
+  const handleDeleteSelectedGroups = async () => {
+    const names = [...selectedVmGroupNames];
+    if (names.length === 0) return;
+    if (
+      !window.confirm(
+        `선택한 VM Group ${names.length}개를 삭제하시겠습니까? 이 작업은 되돌릴 수 없습니다.\n\n${names.join(", ")}`
+      )
+    ) {
+      return;
+    }
+    setDeletingGroups(true);
+    setGroupDeleteError(null);
+    const failures = [];
+    for (const name of names) {
+      try {
+        await api.deleteVmGroup(orgId, projectId, namespaceName, name);
+      } catch (e) {
+        failures.push(`${name}: ${e.message}`);
+      }
+    }
+    setDeletingGroups(false);
+    setSelectedVmGroupNames(new Set());
+    setResourceRefreshKey((k) => k + 1);
+    if (failures.length > 0) setGroupDeleteError(failures.join(" / "));
   };
 
   if (!orgId) {
@@ -426,8 +525,8 @@ export default function ProjectsPage({ orgId, projectId, projects = [] }) {
 
       {projectId && !namespaceName && !loadingNamespaces && namespaces.length > 0 && (
         <div className="empty-state">
-          위에서 vSphere Namespace를 선택하면 Overview / VM Service / Kubernetes /
-          Containers / Volumes / Load Balancer 정보를 확인할 수 있습니다.
+          위에서 vSphere Namespace를 선택하면 Overview / VM Service / VM Group /
+          Kubernetes / Containers / Volumes / Load Balancer 정보를 확인할 수 있습니다.
         </div>
       )}
 
@@ -472,6 +571,30 @@ export default function ProjectsPage({ orgId, projectId, projects = [] }) {
               </div>
             )}
 
+            {tab === "vmgroup" && (
+              <div className="tab-content-toolbar">
+                <button className="btn" onClick={() => setResourceRefreshKey((k) => k + 1)}>
+                  새로고침
+                </button>
+                <button
+                  className="btn btn-danger"
+                  onClick={handleDeleteSelectedGroups}
+                  disabled={selectedVmGroupNames.size === 0 || deletingGroups}
+                >
+                  {deletingGroups ? "삭제 중…" : `삭제 (${selectedVmGroupNames.size})`}
+                </button>
+                <button className="btn btn-primary" onClick={() => setShowCreateVmGroup(true)}>
+                  + 생성
+                </button>
+              </div>
+            )}
+
+            {tab === "vmgroup" && groupDeleteError && (
+              <div className="hint" style={{ color: "var(--accent-red)", marginBottom: 10 }}>
+                삭제 실패: {groupDeleteError}
+              </div>
+            )}
+
             {tab !== "overview" && loadingResources && (
               <div className="empty-state">불러오는 중…</div>
             )}
@@ -488,8 +611,20 @@ export default function ProjectsPage({ orgId, projectId, projects = [] }) {
                 kind={tab}
                 rows={resources}
                 onRowClick={tab === "vmservice" ? setSelectedVmName : undefined}
-                selected={tab === "vmservice" ? selectedVmNames : undefined}
-                onToggleSelect={tab === "vmservice" ? toggleVmSelection : undefined}
+                selected={
+                  tab === "vmservice"
+                    ? selectedVmNames
+                    : tab === "vmgroup"
+                    ? selectedVmGroupNames
+                    : undefined
+                }
+                onToggleSelect={
+                  tab === "vmservice"
+                    ? toggleVmSelection
+                    : tab === "vmgroup"
+                    ? toggleVmGroupSelection
+                    : undefined
+                }
               />
             )}
           </div>
@@ -513,6 +648,16 @@ export default function ProjectsPage({ orgId, projectId, projects = [] }) {
           namespace={namespaceName}
           namespaceInfo={selectedNamespace}
           onClose={() => setShowCreateVm(false)}
+          onCreated={() => setResourceRefreshKey((k) => k + 1)}
+        />
+      )}
+
+      {showCreateVmGroup && (
+        <CreateVmGroupDrawer
+          orgId={orgId}
+          projectId={projectId}
+          namespace={namespaceName}
+          onClose={() => setShowCreateVmGroup(false)}
           onCreated={() => setResourceRefreshKey((k) => k + 1)}
         />
       )}

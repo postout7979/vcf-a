@@ -65,6 +65,20 @@ export const api = {
       )}/vmservice/${encodeURIComponent(vmName)}`,
       { method: "DELETE" }
     ),
+  createVmGroup: (orgId, project, namespace, name) =>
+    request(
+      `/projects/${encodeURIComponent(orgId)}/${encodeURIComponent(project)}/namespaces/${encodeURIComponent(
+        namespace
+      )}/vmgroup`,
+      { method: "POST", body: JSON.stringify({ name }) }
+    ),
+  deleteVmGroup: (orgId, project, namespace, groupName) =>
+    request(
+      `/projects/${encodeURIComponent(orgId)}/${encodeURIComponent(project)}/namespaces/${encodeURIComponent(
+        namespace
+      )}/vmgroup/${encodeURIComponent(groupName)}`,
+      { method: "DELETE" }
+    ),
   deploy: (orgId, vcfItemId, payload) =>
     request(`/deploy/${encodeURIComponent(orgId)}/${encodeURIComponent(vcfItemId)}`, {
       method: "POST",

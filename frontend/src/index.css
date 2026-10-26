@@ -826,6 +826,41 @@ a {
   cursor: pointer;
 }
 
+.mode-choice {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.mode-choice-card {
+  text-align: left;
+  background: var(--panel-alt);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  padding: 14px 16px;
+  width: 100%;
+  transition: border-color 0.12s ease, background 0.12s ease;
+}
+
+.mode-choice-card:hover {
+  border-color: var(--accent-cyan);
+  background: var(--accent-cyan-dim);
+}
+
+.mode-choice-title {
+  font-family: var(--font-mono);
+  font-weight: 700;
+  font-size: 14px;
+  color: var(--text);
+  margin-bottom: 4px;
+}
+
+.mode-choice-desc {
+  font-size: 12px;
+  color: var(--text-secondary);
+  line-height: 1.5;
+}
+
 /* ---------- Namespace Overview tab (status-forward layout) ---------- */
 .ns-overview-header {
   display: flex;

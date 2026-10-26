@@ -668,18 +668,35 @@ class VcfAutomationClient:
         image_name: str,
         storage_class: str,
         power_on: bool = True,
+        guest_id: Optional[str] = None,
+        group_name: Optional[str] = None,
+        zone: Optional[str] = None,
     ) -> dict[str, Any]:
         gv = self.VM_OPERATOR_VERSIONS[0]
+        spec: dict[str, Any] = {
+            "className": class_name,
+            "imageName": image_name,
+            "storageClass": storage_class,
+            "powerState": "PoweredOn" if power_on else "PoweredOff",
+        }
+        # guestID: required when deploying from an ISO, which has no embedded
+        # OVF guest-OS metadata for vm-operator to infer it from.
+        if guest_id:
+            spec["guestID"] = guest_id
+        if group_name:
+            spec["groupName"] = group_name
+
+        metadata: dict[str, Any] = {"name": name, "namespace": namespace}
+        if zone:
+            # Well-known placement label (see VirtualMachine affinity topologyKey
+            # docs); verified accepted via a dry-run create against this API.
+            metadata["labels"] = {"topology.kubernetes.io/zone": zone}
+
         body = {
             "apiVersion": gv,
             "kind": "VirtualMachine",
-            "metadata": {"name": name, "namespace": namespace},
-            "spec": {
-                "className": class_name,
-                "imageName": image_name,
-                "storageClass": storage_class,
-                "powerState": "PoweredOn" if power_on else "PoweredOff",
-            },
+            "metadata": metadata,
+            "spec": spec,
         }
         resp = self._ns_request(
             org_name, endpoint_url, "POST", f"/apis/{gv}/namespaces/{namespace}/virtualmachines", json=body
@@ -689,6 +706,64 @@ class VcfAutomationClient:
                 f"VirtualMachine create failed ({resp.status_code}) for '{name}': {resp.text[:400]}"
             )
         return self._normalize_vm_detail(resp.json())
+
+    # ------------------------------------------------------------------
+    # VM Group (VirtualMachineGroup) - boot-order / grouping for VM Service
+    # ------------------------------------------------------------------
+    def list_namespace_vm_groups(
+        self, org_name: str, endpoint_url: str, namespace: str
+    ) -> list[dict[str, Any]]:
+        items = self._ns_list_versioned(org_name, endpoint_url, namespace, self.VM_OPERATOR_VERSIONS, "virtualmachinegroups")
+        out = []
+        for it in items:
+            meta = it.get("metadata", {}) or {}
+            status = it.get("status", {}) or {}
+            members = [
+                {"name": m.get("name"), "kind": m.get("kind", "VirtualMachine"), "powerState": m.get("powerState", "")}
+                for m in (status.get("members") or [])
+            ]
+            out.append(
+                {
+                    "name": meta.get("name"),
+                    "memberCount": len(members),
+                    "members": members,
+                    # A group with ownerReferences is managed by something else
+                    # (e.g. a VKS cluster) - deletion through this portal is
+                    # restricted to groups it created itself regardless, but
+                    # this is shown in the UI as an extra signal.
+                    "ownedByOther": bool(it.get("metadata", {}).get("ownerReferences")),
+                    "createdAt": meta.get("creationTimestamp"),
+                }
+            )
+        return out
+
+    def create_namespace_vm_group(self, org_name: str, endpoint_url: str, namespace: str, name: str) -> dict[str, Any]:
+        gv = self.VM_OPERATOR_VERSIONS[0]
+        body = {
+            "apiVersion": gv,
+            "kind": "VirtualMachineGroup",
+            "metadata": {"name": name, "namespace": namespace},
+            "spec": {},
+        }
+        resp = self._ns_request(
+            org_name, endpoint_url, "POST", f"/apis/{gv}/namespaces/{namespace}/virtualmachinegroups", json=body
+        )
+        if resp.status_code >= 400:
+            raise VcfAutomationError(
+                f"VirtualMachineGroup create failed ({resp.status_code}) for '{name}': {resp.text[:400]}"
+            )
+        return resp.json()
+
+    def delete_namespace_vm_group(self, org_name: str, endpoint_url: str, namespace: str, name: str) -> None:
+        gv = self.VM_OPERATOR_VERSIONS[0]
+        resp = self._ns_request(
+            org_name, endpoint_url, "DELETE", f"/apis/{gv}/namespaces/{namespace}/virtualmachinegroups/{name}"
+        )
+        if resp.status_code in (200, 202, 404):
+            return
+        raise VcfAutomationError(
+            f"VirtualMachineGroup delete failed ({resp.status_code}) for '{name}': {resp.text[:400]}"
+        )
 
     def list_namespace_kubernetes_clusters(
         self, org_name: str, endpoint_url: str, namespace: str
@@ -790,6 +865,7 @@ class VcfAutomationClient:
 
     NAMESPACE_RESOURCE_KINDS = (
         "vmservice",
+        "vmgroup",
         "kubernetes",
         "containers",
         "volumes",
@@ -801,6 +877,7 @@ class VcfAutomationClient:
     ) -> list[dict[str, Any]]:
         dispatch = {
             "vmservice": self.list_namespace_virtual_machines,
+            "vmgroup": self.list_namespace_vm_groups,
             "kubernetes": self.list_namespace_kubernetes_clusters,
             "containers": self.list_namespace_pods,
             "volumes": self.list_namespace_volumes,
