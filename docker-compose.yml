@@ -17,9 +17,18 @@ services:
     build: ./frontend
     depends_on:
       - backend
+    environment:
+      # SANs for the self-signed TLS cert generated on first start (see
+      # frontend/docker-entrypoint.sh) - must include every hostname/IP
+      # browsers will actually use to reach this portal.
+      TLS_SAN: "DNS:localhost,IP:127.0.0.1,IP:172.18.10.238"
+    volumes:
+      - vcf_portal_certs:/etc/nginx/certs
     ports:
       - "8080:80"
+      - "443:443"
     restart: unless-stopped
 
 volumes:
   vcf_portal_data:
+  vcf_portal_certs:
