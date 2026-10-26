@@ -805,6 +805,16 @@ a {
   padding: 4px 16px;
 }
 
+.tab-content-toolbar {
+  display: flex;
+  justify-content: flex-end;
+  padding: 12px 0;
+}
+
+.table-row-clickable {
+  cursor: pointer;
+}
+
 /* ---------- Namespace Overview tab (status-forward layout) ---------- */
 .ns-overview-header {
   display: flex;

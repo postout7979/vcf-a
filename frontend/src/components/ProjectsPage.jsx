@@ -1,5 +1,7 @@
 import { useEffect, useState } from "react";
 import { api } from "../api/client.js";
+import VmDetailDrawer from "./VmDetailDrawer.jsx";
+import CreateVmDrawer from "./CreateVmDrawer.jsx";
 
 const TABS = [
   { key: "overview", label: "Overview" },
@@ -133,7 +135,7 @@ function OverviewPanel({ ns }) {
   );
 }
 
-function ResourceTable({ kind, rows }) {
+function ResourceTable({ kind, rows, onRowClick }) {
   if (kind === "vmservice") {
     return (
       <table className="table">
@@ -148,7 +150,11 @@ function ResourceTable({ kind, rows }) {
         </thead>
         <tbody>
           {rows.map((r) => (
-            <tr key={r.name}>
+            <tr
+              key={r.name}
+              className="table-row-clickable"
+              onClick={() => onRowClick?.(r.name)}
+            >
               <td className="mono">{r.name}</td>
               <td>{r.powerState || "—"}</td>
               <td>{r.className || "—"}</td>
@@ -278,6 +284,10 @@ export default function ProjectsPage({ orgId, projectId, projects = [] }) {
   const [resources, setResources] = useState([]);
   const [loadingResources, setLoadingResources] = useState(false);
   const [error, setError] = useState(null);
+  const [resourceRefreshKey, setResourceRefreshKey] = useState(0);
+
+  const [selectedVmName, setSelectedVmName] = useState(null);
+  const [showCreateVm, setShowCreateVm] = useState(false);
 
   useEffect(() => {
     setNamespaceName("");
@@ -305,7 +315,7 @@ export default function ProjectsPage({ orgId, projectId, projects = [] }) {
       .then(setResources)
       .catch((e) => setError(e.message))
       .finally(() => setLoadingResources(false));
-  }, [orgId, projectId, namespaceName, tab]);
+  }, [orgId, projectId, namespaceName, tab, resourceRefreshKey]);
 
   if (!orgId) {
     return <div className="empty-state">좌측 상단에서 Organization을 먼저 선택하세요.</div>;
@@ -378,6 +388,14 @@ export default function ProjectsPage({ orgId, projectId, projects = [] }) {
           <div className="tab-content">
             {tab === "overview" && <OverviewPanel ns={selectedNamespace} />}
 
+            {tab === "vmservice" && (
+              <div className="tab-content-toolbar">
+                <button className="btn btn-primary" onClick={() => setShowCreateVm(true)}>
+                  + 생성
+                </button>
+              </div>
+            )}
+
             {tab !== "overview" && loadingResources && (
               <div className="empty-state">불러오는 중…</div>
             )}
@@ -390,10 +408,35 @@ export default function ProjectsPage({ orgId, projectId, projects = [] }) {
               <div className="empty-state">이 Namespace에는 해당 항목이 없습니다.</div>
             )}
             {tab !== "overview" && !loadingResources && !error && resources.length > 0 && (
-              <ResourceTable kind={tab} rows={resources} />
+              <ResourceTable
+                kind={tab}
+                rows={resources}
+                onRowClick={tab === "vmservice" ? setSelectedVmName : undefined}
+              />
             )}
           </div>
         </>
+      )}
+
+      {selectedVmName && (
+        <VmDetailDrawer
+          orgId={orgId}
+          projectId={projectId}
+          namespace={namespaceName}
+          vmName={selectedVmName}
+          onClose={() => setSelectedVmName(null)}
+        />
+      )}
+
+      {showCreateVm && (
+        <CreateVmDrawer
+          orgId={orgId}
+          projectId={projectId}
+          namespace={namespaceName}
+          namespaceInfo={selectedNamespace}
+          onClose={() => setShowCreateVm(false)}
+          onCreated={() => setResourceRefreshKey((k) => k + 1)}
+        />
       )}
     </div>
   );

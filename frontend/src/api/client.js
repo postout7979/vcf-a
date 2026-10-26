@@ -39,6 +39,25 @@ export const api = {
         namespace
       )}/resources?kind=${encodeURIComponent(kind)}`
     ),
+  getVirtualMachine: (orgId, project, namespace, vmName) =>
+    request(
+      `/projects/${encodeURIComponent(orgId)}/${encodeURIComponent(project)}/namespaces/${encodeURIComponent(
+        namespace
+      )}/vmservice/${encodeURIComponent(vmName)}`
+    ),
+  listVmImages: (orgId, project, namespace) =>
+    request(
+      `/projects/${encodeURIComponent(orgId)}/${encodeURIComponent(project)}/namespaces/${encodeURIComponent(
+        namespace
+      )}/vm-images`
+    ),
+  createVirtualMachine: (orgId, project, namespace, payload) =>
+    request(
+      `/projects/${encodeURIComponent(orgId)}/${encodeURIComponent(project)}/namespaces/${encodeURIComponent(
+        namespace
+      )}/vmservice`,
+      { method: "POST", body: JSON.stringify(payload) }
+    ),
   deploy: (orgId, vcfItemId, payload) =>
     request(`/deploy/${encodeURIComponent(orgId)}/${encodeURIComponent(vcfItemId)}`, {
       method: "POST",

@@ -520,17 +520,20 @@ class VcfAutomationClient:
                 )
         return []
 
+    VM_OPERATOR_VERSIONS = [
+        "vmoperator.vmware.com/v1alpha5",
+        "vmoperator.vmware.com/v1alpha4",
+        "vmoperator.vmware.com/v1alpha3",
+        "vmoperator.vmware.com/v1alpha2",
+        "vmoperator.vmware.com/v1alpha1",
+    ]
+
     def list_namespace_virtual_machines(
         self, org_name: str, endpoint_url: str, namespace: str
     ) -> list[dict[str, Any]]:
-        versions = [
-            "vmoperator.vmware.com/v1alpha5",
-            "vmoperator.vmware.com/v1alpha4",
-            "vmoperator.vmware.com/v1alpha3",
-            "vmoperator.vmware.com/v1alpha2",
-            "vmoperator.vmware.com/v1alpha1",
-        ]
-        items = self._ns_list_versioned(org_name, endpoint_url, namespace, versions, "virtualmachines")
+        items = self._ns_list_versioned(
+            org_name, endpoint_url, namespace, self.VM_OPERATOR_VERSIONS, "virtualmachines"
+        )
         out = []
         for it in items:
             meta = it.get("metadata", {}) or {}
@@ -549,6 +552,130 @@ class VcfAutomationClient:
                 }
             )
         return out
+
+    @staticmethod
+    def _normalize_vm_detail(it: dict[str, Any]) -> dict[str, Any]:
+        meta = it.get("metadata", {}) or {}
+        spec = it.get("spec", {}) or {}
+        status = it.get("status", {}) or {}
+        network = status.get("network") or {}
+        return {
+            "name": meta.get("name"),
+            "uid": meta.get("uid", ""),
+            "powerState": status.get("powerState", ""),
+            "phase": status.get("phase", ""),
+            "className": spec.get("className", ""),
+            "imageName": spec.get("imageName", ""),
+            "storageClass": spec.get("storageClass", ""),
+            "biosUUID": spec.get("biosUUID", ""),
+            "instanceUUID": spec.get("instanceUUID", ""),
+            "primaryIp": network.get("primaryIP4", ""),
+            "hostName": network.get("hostName", ""),
+            "interfaces": [
+                {
+                    "name": i.get("name"),
+                    "addresses": [a.get("address") for a in (i.get("ip") or {}).get("addresses", [])],
+                }
+                for i in (network.get("interfaces") or [])
+            ],
+            "volumes": [
+                {
+                    "name": v.get("name"),
+                    "claimName": (v.get("persistentVolumeClaim") or {}).get("claimName", ""),
+                    "diskMode": v.get("diskMode", ""),
+                }
+                for v in (spec.get("volumes") or [])
+            ],
+            "conditions": [
+                {
+                    "type": c.get("type"),
+                    "status": c.get("status"),
+                    "reason": c.get("reason", ""),
+                    "message": c.get("message", ""),
+                }
+                for c in (status.get("conditions") or [])
+            ],
+            "createdAt": meta.get("creationTimestamp"),
+        }
+
+    def get_namespace_virtual_machine(
+        self, org_name: str, endpoint_url: str, namespace: str, name: str
+    ) -> dict[str, Any]:
+        for gv in self.VM_OPERATOR_VERSIONS:
+            resp = self._ns_request(
+                org_name, endpoint_url, "GET", f"/apis/{gv}/namespaces/{namespace}/virtualmachines/{name}"
+            )
+            if resp.status_code == 200:
+                return self._normalize_vm_detail(resp.json())
+            if resp.status_code != 404:
+                raise VcfAutomationError(
+                    f"VirtualMachine fetch failed ({resp.status_code}) for '{name}': {resp.text[:300]}"
+                )
+        raise VcfAutomationError(f"VirtualMachine '{name}' not found in namespace '{namespace}'.")
+
+    def list_namespace_vm_images(
+        self, org_name: str, endpoint_url: str, namespace: str
+    ) -> list[dict[str, Any]]:
+        """Images selectable when creating a VM: cluster-wide content-library
+        images plus any image published directly to this namespace."""
+        gv = self.VM_OPERATOR_VERSIONS[0]
+        out: list[dict[str, Any]] = []
+        for path, scope in (
+            (f"/apis/{gv}/clustervirtualmachineimages", "cluster"),
+            (f"/apis/{gv}/namespaces/{namespace}/virtualmachineimages", "namespace"),
+        ):
+            resp = self._ns_request(org_name, endpoint_url, "GET", path)
+            if resp.status_code != 200:
+                continue
+            for it in resp.json().get("items", []):
+                meta = it.get("metadata", {}) or {}
+                status = it.get("status", {}) or {}
+                name = meta.get("name")
+                if not name:
+                    continue
+                out.append(
+                    {
+                        "name": name,
+                        "displayName": status.get("name")
+                        or (meta.get("annotations") or {}).get("vmware.com/display-name")
+                        or name,
+                        "type": status.get("type", ""),
+                        "scope": scope,
+                    }
+                )
+        return out
+
+    def create_namespace_virtual_machine(
+        self,
+        org_name: str,
+        endpoint_url: str,
+        namespace: str,
+        name: str,
+        class_name: str,
+        image_name: str,
+        storage_class: str,
+        power_on: bool = True,
+    ) -> dict[str, Any]:
+        gv = self.VM_OPERATOR_VERSIONS[0]
+        body = {
+            "apiVersion": gv,
+            "kind": "VirtualMachine",
+            "metadata": {"name": name, "namespace": namespace},
+            "spec": {
+                "className": class_name,
+                "imageName": image_name,
+                "storageClass": storage_class,
+                "powerState": "PoweredOn" if power_on else "PoweredOff",
+            },
+        }
+        resp = self._ns_request(
+            org_name, endpoint_url, "POST", f"/apis/{gv}/namespaces/{namespace}/virtualmachines", json=body
+        )
+        if resp.status_code >= 400:
+            raise VcfAutomationError(
+                f"VirtualMachine create failed ({resp.status_code}) for '{name}': {resp.text[:400]}"
+            )
+        return self._normalize_vm_detail(resp.json())
 
     def list_namespace_kubernetes_clusters(
         self, org_name: str, endpoint_url: str, namespace: str

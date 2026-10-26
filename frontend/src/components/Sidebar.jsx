@@ -1,3 +1,5 @@
+import { useState } from "react";
+
 const NAV_ITEMS = [
   { key: "dashboard", label: "대시보드" },
   { key: "catalog", label: "카탈로그" },
@@ -16,6 +18,15 @@ export default function Sidebar({
   projectId,
   onSelectProject,
 }) {
+  const [projectMenuOpen, setProjectMenuOpen] = useState(false);
+
+  const handleNavClick = (key) => {
+    if (key === "project") {
+      setProjectMenuOpen((open) => !open);
+    }
+    onNavigate(key);
+  };
+
   return (
     <aside className="sidebar">
       <div className="brand">
@@ -40,13 +51,13 @@ export default function Sidebar({
           <div key={item.key}>
             <button
               className={`nav-item ${view === item.key ? "active" : ""}`}
-              onClick={() => onNavigate(item.key)}
+              onClick={() => handleNavClick(item.key)}
             >
               <span className="nav-dot" />
               {item.label}
             </button>
 
-            {item.key === "project" && orgId && projects.length > 0 && (
+            {item.key === "project" && projectMenuOpen && orgId && projects.length > 0 && (
               <div className="nav-sublist">
                 {projects.map((p) => (
                   <button
