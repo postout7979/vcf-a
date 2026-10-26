@@ -663,71 +663,87 @@ class VcfAutomationClient:
             format=serialization.PublicFormat.SubjectPublicKeyInfo,
         ).decode()
 
-        gv = self.VM_OPERATOR_VERSIONS[0]
-        req_name = self.instance_name(f"{name}-console-{int(_time.time())}")
-        create_resp = self._ns_request(
-            org_name,
-            endpoint_url,
-            "POST",
-            f"/apis/{gv}/namespaces/{namespace}/virtualmachinewebconsolerequests",
-            json={
-                "apiVersion": gv,
-                "kind": "VirtualMachineWebConsoleRequest",
-                "metadata": {"name": req_name, "namespace": namespace},
-                "spec": {"name": name, "publicKey": public_pem},
-            },
-        )
-        if create_resp.status_code >= 400:
-            raise VcfAutomationError(
-                f"WebConsoleRequest create failed ({create_resp.status_code}) for '{name}': "
-                f"{create_resp.text[:400]}"
-            )
-        request_uid = (create_resp.json().get("metadata") or {}).get("uid", "")
-
-        encrypted_response = None
-        proxy_addr = None
-        try:
-            for _ in range(20):
-                get_resp = self._ns_request(
-                    org_name,
-                    endpoint_url,
-                    "GET",
-                    f"/apis/{gv}/namespaces/{namespace}/virtualmachinewebconsolerequests/{req_name}",
-                )
-                if get_resp.status_code == 200:
-                    status = get_resp.json().get("status") or {}
-                    encrypted_response = status.get("response")
-                    proxy_addr = status.get("proxyAddr")
-                    if encrypted_response and proxy_addr:
-                        break
-                _time.sleep(0.5)
-        finally:
-            # Best-effort cleanup; the request is short-lived/single-use anyway.
-            self._ns_request(
+        # Some Supervisor builds serve several vmoperator.vmware.com versions
+        # for this CRD but only validate/propagate spec.publicKey on some of
+        # them (a structural schema that omits the field silently prunes it,
+        # so the webhook denies with an "empty" publicKey even though we did
+        # send one). Fall back across versions the same way the read paths
+        # above do, instead of hardcoding VM_OPERATOR_VERSIONS[0].
+        last_error: VcfAutomationError | None = None
+        for gv in self.VM_OPERATOR_VERSIONS:
+            req_name = self.instance_name(f"{name}-console-{int(_time.time())}")
+            create_resp = self._ns_request(
                 org_name,
                 endpoint_url,
-                "DELETE",
-                f"/apis/{gv}/namespaces/{namespace}/virtualmachinewebconsolerequests/{req_name}",
+                "POST",
+                f"/apis/{gv}/namespaces/{namespace}/virtualmachinewebconsolerequests",
+                json={
+                    "apiVersion": gv,
+                    "kind": "VirtualMachineWebConsoleRequest",
+                    "metadata": {"name": req_name, "namespace": namespace},
+                    "spec": {"name": name, "publicKey": public_pem},
+                },
             )
+            if create_resp.status_code == 404:
+                continue
+            if create_resp.status_code >= 400:
+                last_error = VcfAutomationError(
+                    f"WebConsoleRequest create failed ({create_resp.status_code}) for '{name}': "
+                    f"{create_resp.text}"
+                )
+                if "publicKey" in create_resp.text:
+                    continue
+                raise last_error
+            request_uid = (create_resp.json().get("metadata") or {}).get("uid", "")
 
-        if not encrypted_response or not proxy_addr:
-            raise VcfAutomationError("웹 콘솔 티켓 발급이 시간 내에 완료되지 않았습니다. 다시 시도하세요.")
+            encrypted_response = None
+            proxy_addr = None
+            try:
+                for _ in range(20):
+                    get_resp = self._ns_request(
+                        org_name,
+                        endpoint_url,
+                        "GET",
+                        f"/apis/{gv}/namespaces/{namespace}/virtualmachinewebconsolerequests/{req_name}",
+                    )
+                    if get_resp.status_code == 200:
+                        status = get_resp.json().get("status") or {}
+                        encrypted_response = status.get("response")
+                        proxy_addr = status.get("proxyAddr")
+                        if encrypted_response and proxy_addr:
+                            break
+                    _time.sleep(0.5)
+            finally:
+                # Best-effort cleanup; the request is short-lived/single-use anyway.
+                self._ns_request(
+                    org_name,
+                    endpoint_url,
+                    "DELETE",
+                    f"/apis/{gv}/namespaces/{namespace}/virtualmachinewebconsolerequests/{req_name}",
+                )
 
-        decrypted = private_key.decrypt(
-            base64.b64decode(encrypted_response),
-            padding.OAEP(mgf=padding.MGF1(algorithm=hashes.SHA512()), algorithm=hashes.SHA512(), label=None),
-        ).decode("utf-8")
+            if not encrypted_response or not proxy_addr:
+                raise VcfAutomationError("웹 콘솔 티켓 발급이 시간 내에 완료되지 않았습니다. 다시 시도하세요.")
 
-        parsed = urlparse(decrypted)
-        host = parsed.hostname or ""
-        port = parsed.port or 443
-        ticket = parsed.path.rsplit("/", 1)[-1]
+            decrypted = private_key.decrypt(
+                base64.b64decode(encrypted_response),
+                padding.OAEP(mgf=padding.MGF1(algorithm=hashes.SHA512()), algorithm=hashes.SHA512(), label=None),
+            ).decode("utf-8")
 
-        console_url = (
-            f"https://{proxy_addr}/vm/web-console/proxy?host={host}&port={port}"
-            f"&ticket={ticket}&uuid={request_uid}&namespace={namespace}"
+            parsed = urlparse(decrypted)
+            host = parsed.hostname or ""
+            port = parsed.port or 443
+            ticket = parsed.path.rsplit("/", 1)[-1]
+
+            console_url = (
+                f"https://{proxy_addr}/vm/web-console/proxy?host={host}&port={port}"
+                f"&ticket={ticket}&uuid={request_uid}&namespace={namespace}"
+            )
+            return {"consoleUrl": console_url}
+
+        raise last_error or VcfAutomationError(
+            f"VirtualMachineWebConsoleRequest API not available in namespace '{namespace}'."
         )
-        return {"consoleUrl": console_url}
 
     def list_namespace_vm_images(
         self, org_name: str, endpoint_url: str, namespace: str
