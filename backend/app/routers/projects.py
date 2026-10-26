@@ -2,9 +2,11 @@ import asyncio
 import ssl
 from typing import Optional
 
+import httpx
 import websockets
 import yaml
 from fastapi import APIRouter, Depends, HTTPException, WebSocket, WebSocketDisconnect
+from fastapi.responses import Response
 from pydantic import BaseModel
 from sqlmodel import Session, select
 
@@ -161,6 +163,30 @@ def open_virtual_machine_console(
     # instead, so the browser only has to trust this portal's own cert.
     token = console_relay.register(result["consoleUrl"])
     return {"consoleUrl": f"/api/projects/console-relay/{token}"}
+
+
+@router.get("/{org_id}/wmks-assets/{path:path}")
+def wmks_asset(org_id: str, path: str, session: Session = Depends(get_session)):
+    """Proxy VCF Automation's own WMKS client SDK (its "Open Console"
+    feature loads this exact wmks.min.js, confirmed via a live browser
+    capture) through this backend so the browser only ever has to trust
+    this portal's own certificate - never vcf-vra.vcf.local's, which a
+    background <script>/<link> load can't prompt to trust any more than a
+    background WebSocket can. Public, unauthenticated static assets on
+    the VCF Automation side (confirmed live - no bearer token needed), so
+    this is a plain passthrough, not an org-token-authenticated call.
+    """
+    org_name = _org_name(org_id, session)
+    base = settings.vcf_automation_base_url.rstrip("/")
+    url = f"{base}/tenant/{org_name}/automation/assets/scripts/wmks/{path}"
+    try:
+        resp = httpx.get(url, verify=settings.vcf_verify_tls, timeout=15.0)
+    except httpx.HTTPError as exc:
+        raise HTTPException(status_code=502, detail=f"WMKS 에셋 로드 실패: {exc}") from exc
+    if resp.status_code >= 400:
+        raise HTTPException(status_code=resp.status_code, detail="WMKS 에셋을 찾을 수 없습니다.")
+    content_type = resp.headers.get("content-type", "application/octet-stream")
+    return Response(content=resp.content, media_type=content_type)
 
 
 @router.websocket("/console-relay/{token}")

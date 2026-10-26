@@ -117,7 +117,7 @@ export default function App() {
           )}
           {view === "deployments" && <DeploymentsPage />}
           {view === "admin" && (
-            <AdminPage status={status} history={history} onRefresh={refreshSyncInfo} />
+            <AdminPage status={status} onRefresh={refreshSyncInfo} />
           )}
         </div>
       </div>

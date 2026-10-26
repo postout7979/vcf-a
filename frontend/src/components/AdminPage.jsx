@@ -1,27 +1,9 @@
-import { Fragment, useState } from "react";
+import { useState } from "react";
 import { api } from "../api/client.js";
-import SyncPulse from "./SyncPulse.jsx";
-import { formatKst, parseUtc } from "../util/time.js";
+import { formatKst } from "../util/time.js";
 
-function DiffDetails({ details }) {
-  if (!details || details.length === 0) {
-    return <span className="hint">변경 사항 없음</span>;
-  }
-  return (
-    <div style={{ display: "flex", flexWrap: "wrap", gap: 6 }}>
-      {details.map((d, i) => (
-        <span key={i} className={`diff-chip ${d.change === "org_error" ? "removed" : d.change}`}>
-          {d.change}
-          {d.org ? ` · ${d.org}` : ""} · {d.name}
-        </span>
-      ))}
-    </div>
-  );
-}
-
-export default function AdminPage({ status, history, onRefresh }) {
+export default function AdminPage({ status, onRefresh }) {
   const [syncing, setSyncing] = useState(false);
-  const [expanded, setExpanded] = useState(null);
 
   const handleManualSync = async () => {
     setSyncing(true);
@@ -54,7 +36,20 @@ export default function AdminPage({ status, history, onRefresh }) {
           </button>
         </div>
 
-        <SyncPulse events={history} nextRunAt={status?.nextRunAt} />
+        {latest ? (
+          <div className="hint">
+            마지막 동기화: <span className="mono">{formatKst(latest.started_at)}</span>{" "}
+            ({latest.trigger === "manual" ? "수동" : "자동"}) ·{" "}
+            <span
+              className={`diff-chip ${latest.status === "error" ? "removed" : "added"}`}
+              style={{ marginLeft: 4 }}
+            >
+              {latest.status}
+            </span>
+          </div>
+        ) : (
+          <div className="hint">아직 동기화 이력이 없습니다.</div>
+        )}
 
         <div className="stat-row" style={{ marginTop: 20 }}>
           <div className="stat">
@@ -96,60 +91,6 @@ export default function AdminPage({ status, history, onRefresh }) {
             마지막 sync 오류: {latest.error_message}
           </div>
         )}
-      </div>
-
-      <div className="panel-section">
-        <div className="panel-section-title">Sync 이력 (최신순)</div>
-        <table className="table">
-          <thead>
-            <tr>
-              <th>트리거</th>
-              <th>시작 시각</th>
-              <th>상태</th>
-              <th>Org</th>
-              <th>추가/변경/삭제</th>
-              <th></th>
-            </tr>
-          </thead>
-          <tbody>
-            {[...history]
-              .sort((a, b) => parseUtc(b.started_at) - parseUtc(a.started_at))
-              .map((ev) => (
-              <Fragment key={ev.id}>
-                <tr>
-                  <td>{ev.trigger === "manual" ? "수동" : "자동"}</td>
-                  <td className="mono">{formatKst(ev.started_at)}</td>
-                  <td>
-                    <span
-                      className={`diff-chip ${ev.status === "error" ? "removed" : "added"}`}
-                    >
-                      {ev.status}
-                    </span>
-                  </td>
-                  <td className="mono">{ev.orgs_synced ?? "—"}</td>
-                  <td className="mono">
-                    +{ev.added_count} / ~{ev.changed_count} / -{ev.removed_count}
-                  </td>
-                  <td>
-                    <button
-                      className="btn"
-                      onClick={() => setExpanded(expanded === ev.id ? null : ev.id)}
-                    >
-                      {expanded === ev.id ? "접기" : "상세"}
-                    </button>
-                  </td>
-                </tr>
-                {expanded === ev.id && (
-                  <tr>
-                    <td colSpan={6} style={{ background: "var(--panel-alt)" }}>
-                      <DiffDetails details={ev.details_json} />
-                    </td>
-                  </tr>
-                )}
-              </Fragment>
-            ))}
-          </tbody>
-        </table>
       </div>
     </div>
   );

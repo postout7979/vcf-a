@@ -18,8 +18,8 @@
       #bar {
         display: flex;
         align-items: center;
-        gap: 8px;
-        height: 34px;
+        gap: 10px;
+        height: 36px;
         padding: 0 12px;
         background: #1b1b1b;
         border-bottom: 1px solid #333;
@@ -28,6 +28,7 @@
       }
       #status {
         opacity: 0.85;
+        flex: 1;
       }
       #status.error {
         color: #f2799a;
@@ -35,19 +36,38 @@
       #status.connected {
         color: #3cc98a;
       }
-      #screen {
+      #bar button {
+        background: #2a2a2a;
+        color: #eee;
+        border: 1px solid #444;
+        border-radius: 4px;
+        padding: 4px 10px;
+        font-size: 12px;
+        cursor: pointer;
+      }
+      #bar button:hover {
+        background: #353535;
+      }
+      #wmksContainer {
         position: absolute;
-        top: 34px;
+        top: 36px;
         left: 0;
         right: 0;
         bottom: 0;
         background: #000;
       }
+      canvas:focus {
+        outline: none;
+      }
     </style>
   </head>
   <body>
-    <div id="bar"><span id="status">초기화 중...</span></div>
-    <div id="screen"></div>
+    <div id="bar">
+      <span id="status">초기화 중...</span>
+      <button id="btnCad" style="display: none">Ctrl+Alt+Del</button>
+      <button id="btnFullscreen" style="display: none">전체화면</button>
+    </div>
+    <div id="wmksContainer"></div>
     <script type="module" src="/src/console-main.js"></script>
   </body>
 </html>

@@ -29,6 +29,20 @@ function StatusPill({ phase }) {
   return <span className={`status-pill status-${tone}`}>{phase || "Unknown"}</span>;
 }
 
+function mergeResources(prev, next) {
+  const prevByName = new Map(prev.map((r) => [r.name, r]));
+  const merged = next.map((item) => {
+    const old = prevByName.get(item.name);
+    return old && JSON.stringify(old) === JSON.stringify(item) ? old : item;
+  });
+  // Same set of names in the same order and nothing actually changed -
+  // keep the previous array reference too, so callers can skip re-render.
+  if (merged.length === prev.length && merged.every((r, i) => r === prev[i])) {
+    return prev;
+  }
+  return merged;
+}
+
 function formatAge(createdAt) {
   if (!createdAt) return "—";
   const ms = Date.now() - new Date(createdAt).getTime();
@@ -462,7 +476,9 @@ export default function ProjectsPage({ orgId, projectId, projects = [] }) {
     setConsoleError(null);
     try {
       const { consoleUrl } = await api.openVmConsole(orgId, projectId, namespaceName, vmName);
-      const viewerUrl = `/console.html?url=${encodeURIComponent(consoleUrl)}&vm=${encodeURIComponent(vmName)}`;
+      const viewerUrl = `/console.html?url=${encodeURIComponent(consoleUrl)}&vm=${encodeURIComponent(
+        vmName
+      )}&org=${encodeURIComponent(orgId)}`;
       if (win) win.location.href = viewerUrl;
     } catch (e) {
       if (win) win.close();
@@ -500,10 +516,20 @@ export default function ProjectsPage({ orgId, projectId, projects = [] }) {
       .finally(() => setLoadingResources(false));
   }, [orgId, projectId, namespaceName, tab, resourceRefreshKey]);
 
-  // VM Service 상태는 생성/전원 변경이 반영되도록 10초마다 자동 갱신
+  // 생성/전원/상태 변경이 반영되도록 탭별로 60초마다 자동 갱신 - 단, 화면이
+  // 깜빡이지 않도록 로딩 표시/목록 비우기 없이 조용히 받아와서, 실제로 값이
+  // 바뀐 항목만 새 객체로 교체한다(바뀌지 않은 행은 참조가 그대로라 React가
+  // 다시 그리지 않음).
   useEffect(() => {
-    if (!orgId || !projectId || !namespaceName || tab !== "vmservice") return;
-    const id = setInterval(() => setResourceRefreshKey((k) => k + 1), 10000);
+    if (!orgId || !projectId || !namespaceName || tab === "overview") return;
+    const id = setInterval(() => {
+      api
+        .namespaceResources(orgId, projectId, namespaceName, tab)
+        .then((next) => setResources((prev) => mergeResources(prev, next)))
+        .catch(() => {
+          /* 자동 갱신 실패는 조용히 무시 - 다음 주기에 다시 시도 */
+        });
+    }, 60000);
     return () => clearInterval(id);
   }, [orgId, projectId, namespaceName, tab]);
 
