@@ -193,6 +193,12 @@ async def console_relay_ws(websocket: WebSocket, token: str):
             for task in pending:
                 task.cancel()
             await asyncio.gather(*pending, return_exceptions=True)
+            for task in done:
+                # Retrieve (not re-raise) so asyncio doesn't log "Task
+                # exception was never retrieved" - whichever side closed
+                # first, the connection is already being torn down either
+                # way.
+                task.exception()
     except (OSError, websockets.exceptions.WebSocketException) as exc:
         try:
             await websocket.close(code=1011, reason=str(exc)[:120])
@@ -210,10 +216,13 @@ async def _relay_client_to_upstream(client_ws: WebSocket, upstream_ws) -> None:
                 await upstream_ws.send(message["bytes"])
             elif message.get("text") is not None:
                 await upstream_ws.send(message["text"])
-    except WebSocketDisconnect:
+    except (WebSocketDisconnect, websockets.exceptions.ConnectionClosed):
         pass
     finally:
-        await upstream_ws.close()
+        try:
+            await upstream_ws.close()
+        except websockets.exceptions.ConnectionClosed:
+            pass
 
 
 async def _relay_upstream_to_client(upstream_ws, client_ws: WebSocket) -> None:

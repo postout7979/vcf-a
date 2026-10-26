@@ -91,6 +91,21 @@ def _org_token_map() -> dict[str, str]:
     return {str(k): str(v) for k, v in data.items()}
 
 
+def _derive_vm_phase(conditions: list[dict[str, Any]]) -> str:
+    """vm-operator's VirtualMachine status (unlike SupervisorNamespace's)
+    has no top-level phase string - only a list of conditions - so the
+    portal's own list/detail views always showed "Unknown" regardless of
+    actual VM health. Summarize them the way a phase field would: "Ready"
+    once every condition is True, otherwise the first condition that
+    isn't (its type is already a readable label, e.g.
+    "VirtualMachineNetworkReady"), or "" if the VM has no conditions yet
+    (just created, not reconciled)."""
+    not_true = next((c for c in conditions if c.get("status") != "True"), None)
+    if not_true:
+        return not_true.get("type") or "NotReady"
+    return "Ready" if conditions else ""
+
+
 class VcfAutomationClient:
     def __init__(self) -> None:
         self._base_url = settings.vcf_automation_base_url.rstrip("/")
@@ -594,7 +609,7 @@ class VcfAutomationClient:
                 {
                     "name": meta.get("name"),
                     "powerState": status.get("powerState", ""),
-                    "phase": status.get("phase", ""),
+                    "phase": _derive_vm_phase(status.get("conditions") or []),
                     "className": spec.get("className", ""),
                     "imageName": spec.get("imageName", ""),
                     "storageClass": spec.get("storageClass", ""),
@@ -602,6 +617,8 @@ class VcfAutomationClient:
                     # Present when this VM is a node of a VKS (Cluster API)
                     # cluster rather than a standalone VM Service VM.
                     "vksClusterName": labels.get("cluster.x-k8s.io/cluster-name", ""),
+                    "zone": status.get("zone") or labels.get("topology.kubernetes.io/zone", ""),
+                    "groupName": spec.get("groupName", ""),
                     "createdAt": meta.get("creationTimestamp"),
                 }
             )
@@ -617,7 +634,7 @@ class VcfAutomationClient:
             "name": meta.get("name"),
             "uid": meta.get("uid", ""),
             "powerState": status.get("powerState", ""),
-            "phase": status.get("phase", ""),
+            "phase": _derive_vm_phase(status.get("conditions") or []),
             "className": spec.get("className", ""),
             "imageName": spec.get("imageName", ""),
             "storageClass": spec.get("storageClass", ""),

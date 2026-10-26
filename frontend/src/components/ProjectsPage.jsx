@@ -29,6 +29,20 @@ function StatusPill({ phase }) {
   return <span className={`status-pill status-${tone}`}>{phase || "Unknown"}</span>;
 }
 
+function formatAge(createdAt) {
+  if (!createdAt) return "—";
+  const ms = Date.now() - new Date(createdAt).getTime();
+  if (!Number.isFinite(ms) || ms < 0) return "—";
+  const minutes = Math.floor(ms / 60000);
+  if (minutes < 1) return "<1m";
+  if (minutes < 60) return `${minutes}m`;
+  const hours = Math.floor(minutes / 60);
+  if (hours < 24) return `${hours}h`;
+  const days = Math.floor(hours / 24);
+  if (days < 365) return `${days}d`;
+  return `${Math.floor(days / 365)}y`;
+}
+
 function OverviewPanel({ ns }) {
   if (!ns) return null;
   return (
@@ -161,6 +175,9 @@ function ResourceTable({
             <th>클래스</th>
             <th>이미지</th>
             <th>IP</th>
+            <th>Zone</th>
+            <th>VM Group</th>
+            <th>Age</th>
             <th style={{ width: 36 }} />
           </tr>
         </thead>
@@ -201,6 +218,9 @@ function ResourceTable({
               <td>{r.className || "—"}</td>
               <td className="mono">{r.imageName || "—"}</td>
               <td className="mono">{r.primaryIp || "—"}</td>
+              <td className="mono">{r.zone || "—"}</td>
+              <td className="mono">{r.groupName || "—"}</td>
+              <td className="mono">{formatAge(r.createdAt)}</td>
               <td onClick={(e) => e.stopPropagation()} style={{ position: "relative" }}>
                 <button
                   className="row-menu-btn"
