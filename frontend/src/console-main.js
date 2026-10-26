@@ -1,7 +1,9 @@
 const params = new URLSearchParams(window.location.search);
-const wsUrl = params.get("url");
+let wsUrl = params.get("url");
 const vmName = params.get("vm") || "";
 const orgId = params.get("org") || "";
+const projectId = params.get("project") || "";
+const namespace = params.get("namespace") || "";
 
 const statusEl = document.getElementById("status");
 const btnCad = document.getElementById("btnCad");
@@ -29,6 +31,34 @@ function loadStylesheet(href) {
   el.rel = "stylesheet";
   el.href = href;
   document.head.appendChild(el);
+}
+
+// The ticket this console connects over is short-lived (observed:
+// disconnects with a clean WS close code ~10-30s in, not an error - this
+// looks like a deliberate session time limit on the ticket itself, not a
+// failure). Rather than leave the user staring at a dead screen, fetch a
+// fresh ticket and reconnect automatically when that happens, as long as
+// we have enough context (org/project/namespace/vm) to ask for one.
+const canRefetchTicket = Boolean(orgId && projectId && namespace && vmName);
+let reconnectAttempts = 0;
+const MAX_RECONNECT_ATTEMPTS = 20;
+
+async function fetchFreshTicket() {
+  const path =
+    `/api/projects/${encodeURIComponent(orgId)}/${encodeURIComponent(projectId)}` +
+    `/namespaces/${encodeURIComponent(namespace)}/vmservice/${encodeURIComponent(vmName)}/console`;
+  const res = await fetch(path, { method: "POST", headers: { "Content-Type": "application/json" } });
+  if (!res.ok) {
+    let detail = res.statusText;
+    try {
+      detail = (await res.json()).detail || detail;
+    } catch (_) {
+      /* noop */
+    }
+    throw new Error(detail);
+  }
+  const data = await res.json();
+  return data.consoleUrl;
 }
 
 async function main() {
@@ -68,6 +98,23 @@ async function main() {
   const wmks = WMKS.createWMKS("wmksContainer", {});
   let wasConnected = false;
 
+  const attemptReconnect = async (reason) => {
+    if (!canRefetchTicket || reconnectAttempts >= MAX_RECONNECT_ATTEMPTS) {
+      setStatus(reason, "error");
+      return;
+    }
+    reconnectAttempts += 1;
+    setStatus("세션이 만료되어 재연결 중...");
+    try {
+      await new Promise((resolve) => setTimeout(resolve, 1000));
+      wsUrl = await fetchFreshTicket();
+      wasConnected = false;
+      wmks.connect(wsUrl);
+    } catch (e) {
+      setStatus(`재연결 실패: ${e.message}`, "error");
+    }
+  };
+
   wmks.register(WMKS.CONST.Events.CONNECTION_STATE_CHANGE, (evt, data) => {
     switch (data.state) {
       case WMKS.CONST.ConnectionState.CONNECTING:
@@ -75,19 +122,22 @@ async function main() {
         break;
       case WMKS.CONST.ConnectionState.CONNECTED:
         wasConnected = true;
+        reconnectAttempts = 0;
         setStatus(vmName ? `연결됨 - ${vmName}` : "연결됨", "connected");
         btnCad.style.display = "";
         btnFullscreen.style.display = "";
         break;
       case WMKS.CONST.ConnectionState.DISCONNECTED:
-        setStatus(
-          wasConnected
-            ? "연결이 종료되었습니다. 다시 보려면 VM 목록에서 웹 콘솔을 다시 여세요."
-            : `연결할 수 없습니다${data.reason ? `: ${data.reason}` : ""}`,
-          "error"
-        );
         btnCad.style.display = "none";
         btnFullscreen.style.display = "none";
+        if (wasConnected) {
+          // Session ended after a working connection - almost certainly
+          // the ticket's own short time limit, not a real failure. Retry
+          // silently instead of making the user reopen the tab.
+          attemptReconnect("연결이 종료되었습니다. 다시 보려면 VM 목록에서 웹 콘솔을 다시 여세요.");
+        } else {
+          setStatus(`연결할 수 없습니다${data.reason ? `: ${data.reason}` : ""}`, "error");
+        }
         break;
     }
   });

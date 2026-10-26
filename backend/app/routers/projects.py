@@ -1,4 +1,5 @@
 import asyncio
+import logging
 import ssl
 from typing import Optional
 
@@ -15,6 +16,8 @@ from app.config import settings
 from app.db import get_session
 from app.models import Organization, PortalVirtualMachine, PortalVmGroup
 from app.vcf_client import VcfAutomationError, vcf_client
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/api/projects", tags=["projects"])
 
@@ -215,6 +218,7 @@ async def console_relay_ws(websocket: WebSocket, token: str):
         ) as upstream_ws:
             forward = asyncio.create_task(_relay_client_to_upstream(websocket, upstream_ws))
             backward = asyncio.create_task(_relay_upstream_to_client(upstream_ws, websocket))
+            names = {forward: "client->upstream", backward: "upstream->client"}
             done, pending = await asyncio.wait({forward, backward}, return_when=asyncio.FIRST_COMPLETED)
             for task in pending:
                 task.cancel()
@@ -224,7 +228,15 @@ async def console_relay_ws(websocket: WebSocket, token: str):
                 # exception was never retrieved" - whichever side closed
                 # first, the connection is already being torn down either
                 # way.
-                task.exception()
+                exc = task.exception()
+                logger.info(
+                    "console relay: %s task ended first (exception=%r)", names.get(task, task), exc
+                )
+            logger.info(
+                "console relay: upstream close_code=%s close_reason=%r",
+                upstream_ws.close_code,
+                upstream_ws.close_reason,
+            )
     except (OSError, websockets.exceptions.WebSocketException) as exc:
         try:
             await websocket.close(code=1011, reason=str(exc)[:120])
@@ -233,15 +245,23 @@ async def console_relay_ws(websocket: WebSocket, token: str):
 
 
 async def _relay_client_to_upstream(client_ws: WebSocket, upstream_ws) -> None:
+    count = 0
     try:
         while True:
             message = await client_ws.receive()
             if message["type"] == "websocket.disconnect":
+                logger.info(
+                    "console relay: browser disconnected (code=%s) after %d message(s)",
+                    message.get("code"),
+                    count,
+                )
                 break
             if message.get("bytes") is not None:
                 await upstream_ws.send(message["bytes"])
+                count += 1
             elif message.get("text") is not None:
                 await upstream_ws.send(message["text"])
+                count += 1
     except (WebSocketDisconnect, websockets.exceptions.ConnectionClosed):
         pass
     finally:
@@ -252,13 +272,16 @@ async def _relay_client_to_upstream(client_ws: WebSocket, upstream_ws) -> None:
 
 
 async def _relay_upstream_to_client(upstream_ws, client_ws: WebSocket) -> None:
+    count = 0
     try:
         async for message in upstream_ws:
             if isinstance(message, bytes):
                 await client_ws.send_bytes(message)
             else:
                 await client_ws.send_text(message)
+            count += 1
     finally:
+        logger.info("console relay: forwarded %d upstream message(s) to browser", count)
         try:
             await client_ws.close()
         except RuntimeError:

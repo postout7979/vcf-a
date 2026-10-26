@@ -476,9 +476,16 @@ export default function ProjectsPage({ orgId, projectId, projects = [] }) {
     setConsoleError(null);
     try {
       const { consoleUrl } = await api.openVmConsole(orgId, projectId, namespaceName, vmName);
-      const viewerUrl = `/console.html?url=${encodeURIComponent(consoleUrl)}&vm=${encodeURIComponent(
-        vmName
-      )}&org=${encodeURIComponent(orgId)}`;
+      // project/namespace/vm/org are also passed (not just the one-time
+      // ticket) so the viewer can silently fetch a fresh ticket and
+      // reconnect itself once the current one's short-lived session ends,
+      // instead of leaving the user staring at a dead screen.
+      const viewerUrl =
+        `/console.html?url=${encodeURIComponent(consoleUrl)}` +
+        `&vm=${encodeURIComponent(vmName)}` +
+        `&org=${encodeURIComponent(orgId)}` +
+        `&project=${encodeURIComponent(projectId)}` +
+        `&namespace=${encodeURIComponent(namespaceName)}`;
       if (win) win.location.href = viewerUrl;
     } catch (e) {
       if (win) win.close();
