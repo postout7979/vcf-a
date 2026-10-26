@@ -31,3 +31,29 @@ def list_namespaces(org_id: str, project: str, session: Session = Depends(get_se
         return vcf_client.list_supervisor_namespaces(org_name, project)
     except VcfAutomationError as exc:
         raise HTTPException(status_code=502, detail=str(exc)) from exc
+
+
+@router.get("/{org_id}/{project}/namespaces/{namespace}/resources")
+def namespace_resources(
+    org_id: str,
+    project: str,
+    namespace: str,
+    kind: str,
+    session: Session = Depends(get_session),
+):
+    if kind not in vcf_client.NAMESPACE_RESOURCE_KINDS:
+        raise HTTPException(
+            status_code=400,
+            detail=f"kind must be one of {vcf_client.NAMESPACE_RESOURCE_KINDS}.",
+        )
+    org_name = _org_name(org_id, session)
+    try:
+        namespaces = vcf_client.list_supervisor_namespaces(org_name, project)
+        ns = next((n for n in namespaces if n["name"] == namespace), None)
+        if not ns or not ns.get("endpointUrl"):
+            raise HTTPException(
+                status_code=404, detail="Namespace not found, or it has no endpoint URL yet."
+            )
+        return vcf_client.list_namespace_resources(org_name, ns["endpointUrl"], namespace, kind)
+    except VcfAutomationError as exc:
+        raise HTTPException(status_code=502, detail=str(exc)) from exc

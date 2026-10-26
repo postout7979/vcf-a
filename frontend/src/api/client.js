@@ -33,6 +33,12 @@ export const api = {
   listProjects: (orgId) => request(`/projects?org_id=${encodeURIComponent(orgId)}`),
   listNamespaces: (orgId, project) =>
     request(`/projects/${encodeURIComponent(orgId)}/${encodeURIComponent(project)}/namespaces`),
+  namespaceResources: (orgId, project, namespace, kind) =>
+    request(
+      `/projects/${encodeURIComponent(orgId)}/${encodeURIComponent(project)}/namespaces/${encodeURIComponent(
+        namespace
+      )}/resources?kind=${encodeURIComponent(kind)}`
+    ),
   deploy: (orgId, vcfItemId, payload) =>
     request(`/deploy/${encodeURIComponent(orgId)}/${encodeURIComponent(vcfItemId)}`, {
       method: "POST",

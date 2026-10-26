@@ -469,6 +469,210 @@ class VcfAutomationClient:
             )
         return out
 
+    # ------------------------------------------------------------------
+    # Namespace resource tabs (VM Service / Kubernetes / Containers /
+    # Volumes / Load Balancer). These live on the Supervisor cluster
+    # itself, reached through the SupervisorNamespace's own
+    # status.namespaceEndpointURL - *not* the CCI gateway prefix used
+    # above, which is forbidden for raw k8s verbs (pods/services/...).
+    # ------------------------------------------------------------------
+    def _ns_request(self, org_name: str, endpoint_url: str, method: str, path: str, **kwargs) -> httpx.Response:
+        def send() -> httpx.Response:
+            token = self._get_org_token(org_name)
+            headers = dict(kwargs.get("headers") or {})
+            headers["Authorization"] = f"Bearer {token}"
+            call_kwargs = {**kwargs, "headers": headers}
+            with self._client() as client:
+                return client.request(method, f"{endpoint_url}{path}", **call_kwargs)
+
+        resp = send()
+        if resp.status_code == 401:
+            self._org_tokens.pop(org_name, None)
+            resp = send()
+        return resp
+
+    def _ns_list(self, org_name: str, endpoint_url: str, path: str) -> list[dict[str, Any]]:
+        resp = self._ns_request(org_name, endpoint_url, "GET", path)
+        if resp.status_code == 404:
+            return []
+        if resp.status_code >= 400:
+            raise VcfAutomationError(
+                f"Namespace resource list failed ({resp.status_code}) at {path}: {resp.text[:300]}"
+            )
+        return resp.json().get("items", [])
+
+    def _ns_list_versioned(
+        self, org_name: str, endpoint_url: str, namespace: str, group_versions: list[str], plural: str
+    ) -> list[dict[str, Any]]:
+        """Try each apiVersion newest-first; a CRD/version that isn't
+        installed in this environment returns 404 and is skipped rather
+        than failing the whole tab."""
+        for gv in group_versions:
+            resp = self._ns_request(
+                org_name, endpoint_url, "GET", f"/apis/{gv}/namespaces/{namespace}/{plural}"
+            )
+            if resp.status_code == 200:
+                return resp.json().get("items", [])
+            if resp.status_code != 404:
+                raise VcfAutomationError(
+                    f"Namespace resource list failed ({resp.status_code}) for {gv}/{plural}: "
+                    f"{resp.text[:300]}"
+                )
+        return []
+
+    def list_namespace_virtual_machines(
+        self, org_name: str, endpoint_url: str, namespace: str
+    ) -> list[dict[str, Any]]:
+        versions = [
+            "vmoperator.vmware.com/v1alpha5",
+            "vmoperator.vmware.com/v1alpha4",
+            "vmoperator.vmware.com/v1alpha3",
+            "vmoperator.vmware.com/v1alpha2",
+            "vmoperator.vmware.com/v1alpha1",
+        ]
+        items = self._ns_list_versioned(org_name, endpoint_url, namespace, versions, "virtualmachines")
+        out = []
+        for it in items:
+            meta = it.get("metadata", {}) or {}
+            spec = it.get("spec", {}) or {}
+            status = it.get("status", {}) or {}
+            out.append(
+                {
+                    "name": meta.get("name"),
+                    "powerState": status.get("powerState", ""),
+                    "phase": status.get("phase", ""),
+                    "className": spec.get("className", ""),
+                    "imageName": spec.get("imageName", ""),
+                    "storageClass": spec.get("storageClass", ""),
+                    "primaryIp": (status.get("network") or {}).get("primaryIP4", ""),
+                    "createdAt": meta.get("creationTimestamp"),
+                }
+            )
+        return out
+
+    def list_namespace_kubernetes_clusters(
+        self, org_name: str, endpoint_url: str, namespace: str
+    ) -> list[dict[str, Any]]:
+        versions = ["cluster.x-k8s.io/v1beta2", "cluster.x-k8s.io/v1beta1"]
+        items = self._ns_list_versioned(org_name, endpoint_url, namespace, versions, "clusters")
+        out = []
+        for it in items:
+            meta = it.get("metadata", {}) or {}
+            spec = it.get("spec", {}) or {}
+            status = it.get("status", {}) or {}
+            topology = spec.get("topology", {}) or {}
+            # CAPI v1beta1 used a "Ready" condition; v1beta2 renamed it to "Available".
+            ready = any(
+                c.get("type") in ("Ready", "Available") and c.get("status") == "True"
+                for c in (status.get("conditions") or [])
+            )
+            out.append(
+                {
+                    "name": meta.get("name"),
+                    "ready": ready,
+                    "controlPlaneEndpoint": (spec.get("controlPlaneEndpoint") or {}).get("host", ""),
+                    "controlPlaneReplicas": (topology.get("controlPlane") or {}).get("replicas"),
+                    "createdAt": meta.get("creationTimestamp"),
+                }
+            )
+        return out
+
+    def list_namespace_pods(
+        self, org_name: str, endpoint_url: str, namespace: str
+    ) -> list[dict[str, Any]]:
+        items = self._ns_list(org_name, endpoint_url, f"/api/v1/namespaces/{namespace}/pods")
+        out = []
+        for it in items:
+            meta = it.get("metadata", {}) or {}
+            spec = it.get("spec", {}) or {}
+            status = it.get("status", {}) or {}
+            out.append(
+                {
+                    "name": meta.get("name"),
+                    "phase": status.get("phase", ""),
+                    "podIP": status.get("podIP", ""),
+                    "node": spec.get("nodeName", ""),
+                    "containers": [
+                        {"name": c.get("name"), "image": c.get("image")}
+                        for c in (spec.get("containers") or [])
+                    ],
+                    "createdAt": meta.get("creationTimestamp"),
+                }
+            )
+        return out
+
+    def list_namespace_volumes(
+        self, org_name: str, endpoint_url: str, namespace: str
+    ) -> list[dict[str, Any]]:
+        items = self._ns_list(org_name, endpoint_url, f"/api/v1/namespaces/{namespace}/persistentvolumeclaims")
+        out = []
+        for it in items:
+            meta = it.get("metadata", {}) or {}
+            spec = it.get("spec", {}) or {}
+            status = it.get("status", {}) or {}
+            out.append(
+                {
+                    "name": meta.get("name"),
+                    "phase": status.get("phase", ""),
+                    "storageClassName": spec.get("storageClassName", ""),
+                    "capacity": (status.get("capacity") or {}).get("storage", ""),
+                    "accessModes": spec.get("accessModes", []),
+                    "createdAt": meta.get("creationTimestamp"),
+                }
+            )
+        return out
+
+    def list_namespace_load_balancers(
+        self, org_name: str, endpoint_url: str, namespace: str
+    ) -> list[dict[str, Any]]:
+        items = self._ns_list(org_name, endpoint_url, f"/api/v1/namespaces/{namespace}/services")
+        out = []
+        for it in items:
+            spec = it.get("spec", {}) or {}
+            if spec.get("type") != "LoadBalancer":
+                continue
+            meta = it.get("metadata", {}) or {}
+            status = it.get("status", {}) or {}
+            ingress = (status.get("loadBalancer") or {}).get("ingress") or []
+            out.append(
+                {
+                    "name": meta.get("name"),
+                    "clusterIP": spec.get("clusterIP", ""),
+                    "externalIps": [i.get("ip") or i.get("hostname") for i in ingress],
+                    "ports": [
+                        {"name": p.get("name"), "port": p.get("port"), "protocol": p.get("protocol")}
+                        for p in (spec.get("ports") or [])
+                    ],
+                    "createdAt": meta.get("creationTimestamp"),
+                }
+            )
+        return out
+
+    NAMESPACE_RESOURCE_KINDS = (
+        "vmservice",
+        "kubernetes",
+        "containers",
+        "volumes",
+        "loadbalancer",
+    )
+
+    def list_namespace_resources(
+        self, org_name: str, endpoint_url: str, namespace: str, kind: str
+    ) -> list[dict[str, Any]]:
+        dispatch = {
+            "vmservice": self.list_namespace_virtual_machines,
+            "kubernetes": self.list_namespace_kubernetes_clusters,
+            "containers": self.list_namespace_pods,
+            "volumes": self.list_namespace_volumes,
+            "loadbalancer": self.list_namespace_load_balancers,
+        }
+        fn = dispatch.get(kind)
+        if not fn:
+            raise VcfAutomationError(
+                f"Unknown namespace resource kind '{kind}' (expected one of {self.NAMESPACE_RESOURCE_KINDS})."
+            )
+        return fn(org_name, endpoint_url, namespace)
+
     def _catalog_items_path(self, org_name: str, project: str) -> str:
         prefix = self._cci_prefix(org_name)
         if self._cci_namespaced(org_name, "catalogitems"):

@@ -704,49 +704,26 @@ a {
   }
 }
 
-/* ---------- Project list / vSphere Namespace panel ---------- */
-.project-list {
-  display: flex;
-  flex-direction: column;
-  gap: 8px;
+/* ---------- Project page: Project/Namespace selectors + resource tabs ---------- */
+.project-shell {
+  display: grid;
+  grid-template-columns: 240px 1fr;
+  gap: 20px;
+  align-items: start;
 }
 
-.project-row {
+.project-side {
   display: flex;
   flex-direction: column;
-  gap: 2px;
-  text-align: left;
+  gap: 4px;
   background: var(--panel);
   border: 1px solid var(--border);
   border-radius: var(--radius-md);
-  padding: 12px 14px;
-  width: 100%;
-  transition: border-color 0.12s ease, background 0.12s ease;
+  padding: 16px;
 }
 
-.project-row:hover {
-  border-color: #cabdea;
-}
-
-.project-row.active {
-  border-color: var(--accent-cyan);
-  background: var(--accent-cyan-dim);
-}
-
-.project-row-name {
-  font-family: var(--font-mono);
-  font-size: 13px;
-  font-weight: 600;
-  color: var(--text);
-}
-
-.project-row-desc {
-  font-size: 12px;
-  color: var(--text-secondary);
-}
-
-.ns-card .card-top {
-  margin-bottom: 4px;
+.project-main {
+  min-width: 0;
 }
 
 .badge-ok {
@@ -755,19 +732,42 @@ a {
   background: var(--accent-cyan-dim);
 }
 
-.chip-row {
+.tabs {
   display: flex;
-  flex-wrap: wrap;
-  gap: 6px;
+  gap: 4px;
+  border-bottom: 1px solid var(--border);
+  margin-bottom: 16px;
 }
 
-.chip {
-  font-family: var(--font-mono);
-  font-size: 11px;
-  padding: 3px 9px;
-  border-radius: 20px;
-  background: var(--panel-alt);
-  border: 1px solid var(--border);
+.tab {
+  background: transparent;
+  border: none;
+  border-bottom: 2px solid transparent;
+  padding: 10px 14px;
+  font-size: 13px;
   color: var(--text-secondary);
-  white-space: nowrap;
+  transition: color 0.12s ease, border-color 0.12s ease;
+}
+
+.tab:hover {
+  color: var(--text);
+}
+
+.tab.active {
+  color: var(--accent-cyan);
+  border-bottom-color: var(--accent-cyan);
+  font-weight: 600;
+}
+
+.tab-content {
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  padding: 4px 16px;
+}
+
+@media (max-width: 900px) {
+  .project-shell {
+    grid-template-columns: 1fr;
+  }
 }
