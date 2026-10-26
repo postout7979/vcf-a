@@ -649,6 +649,17 @@ class VcfAutomationClient:
         the browser-facing console URL:
           https://<proxyAddr>/vm/web-console/proxy?host=<host>&port=<port>
             &ticket=<ticket>&uuid=<request-uid>&namespace=<namespace>
+
+        spec.publicKey must be a PEM block headered "PUBLIC KEY" whose body
+        is actually PKCS#1 DER, not a real SubjectPublicKeyInfo/PKIX key -
+        vm-operator's validating webhook checks the PEM header is literally
+        "PUBLIC KEY" but then parses the body with x509.ParsePKCS1PublicKey
+        (confirmed by reading virtualmachinewebconsolerequest_validator.go
+        in vmware-tanzu/vm-operator). A standard SubjectPublicKeyInfo PEM
+        always fails that parse, and the webhook's error always reports the
+        rejected value as a literal "" (hardcoded in its own field.Invalid
+        call) regardless of what was actually sent - which is why the 422
+        looked like an empty-key problem when it was really a format one.
         """
         import base64
         import time as _time
@@ -658,18 +669,17 @@ class VcfAutomationClient:
         from cryptography.hazmat.primitives.asymmetric import padding, rsa
 
         private_key = rsa.generate_private_key(public_exponent=65537, key_size=2048)
-        public_pem = private_key.public_key().public_bytes(
-            encoding=serialization.Encoding.PEM,
-            format=serialization.PublicFormat.SubjectPublicKeyInfo,
-        ).decode()
+        pkcs1_der = private_key.public_key().public_bytes(
+            encoding=serialization.Encoding.DER,
+            format=serialization.PublicFormat.PKCS1,
+        )
+        pkcs1_b64 = base64.encodebytes(pkcs1_der).decode("ascii")
+        public_pem = f"-----BEGIN PUBLIC KEY-----\n{pkcs1_b64}-----END PUBLIC KEY-----\n"
 
-        # Some Supervisor builds serve several vmoperator.vmware.com versions
-        # for this CRD but only validate/propagate spec.publicKey on some of
-        # them (a structural schema that omits the field silently prunes it,
-        # so the webhook denies with an "empty" publicKey even though we did
-        # send one). Fall back across versions the same way the read paths
-        # above do, instead of hardcoding VM_OPERATOR_VERSIONS[0].
-        last_error: VcfAutomationError | None = None
+        # Not every Supervisor build serves every vmoperator.vmware.com
+        # version of this CRD - fall back across versions on a 404 the same
+        # way the read paths above do, instead of hardcoding
+        # VM_OPERATOR_VERSIONS[0].
         for gv in self.VM_OPERATOR_VERSIONS:
             req_name = self.instance_name(f"{name}-console-{int(_time.time())}")
             create_resp = self._ns_request(
@@ -687,13 +697,10 @@ class VcfAutomationClient:
             if create_resp.status_code == 404:
                 continue
             if create_resp.status_code >= 400:
-                last_error = VcfAutomationError(
+                raise VcfAutomationError(
                     f"WebConsoleRequest create failed ({create_resp.status_code}) for '{name}': "
                     f"{create_resp.text}"
                 )
-                if "publicKey" in create_resp.text:
-                    continue
-                raise last_error
             request_uid = (create_resp.json().get("metadata") or {}).get("uid", "")
 
             encrypted_response = None
@@ -741,7 +748,7 @@ class VcfAutomationClient:
             )
             return {"consoleUrl": console_url}
 
-        raise last_error or VcfAutomationError(
+        raise VcfAutomationError(
             f"VirtualMachineWebConsoleRequest API not available in namespace '{namespace}'."
         )
 

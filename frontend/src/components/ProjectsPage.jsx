@@ -156,6 +156,7 @@ function ResourceTable({
           <tr>
             {onToggleSelect && <th style={{ width: 28 }} />}
             <th>이름</th>
+            <th>상태</th>
             <th>전원</th>
             <th>클래스</th>
             <th>이미지</th>
@@ -192,6 +193,9 @@ function ResourceTable({
                     VKS: {r.vksClusterName}
                   </span>
                 )}
+              </td>
+              <td>
+                <StatusPill phase={r.phase} />
               </td>
               <td>{r.powerState || "—"}</td>
               <td>{r.className || "—"}</td>
