@@ -45,6 +45,19 @@ export const api = {
         namespace
       )}/vmservice/${encodeURIComponent(vmName)}`
     ),
+  getVmYaml: (orgId, project, namespace, vmName) =>
+    request(
+      `/projects/${encodeURIComponent(orgId)}/${encodeURIComponent(project)}/namespaces/${encodeURIComponent(
+        namespace
+      )}/vmservice/${encodeURIComponent(vmName)}/yaml`
+    ),
+  openVmConsole: (orgId, project, namespace, vmName) =>
+    request(
+      `/projects/${encodeURIComponent(orgId)}/${encodeURIComponent(project)}/namespaces/${encodeURIComponent(
+        namespace
+      )}/vmservice/${encodeURIComponent(vmName)}/console`,
+      { method: "POST" }
+    ),
   listVmImages: (orgId, project, namespace) =>
     request(
       `/projects/${encodeURIComponent(orgId)}/${encodeURIComponent(project)}/namespaces/${encodeURIComponent(

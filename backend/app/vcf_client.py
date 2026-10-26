@@ -539,6 +539,7 @@ class VcfAutomationClient:
             meta = it.get("metadata", {}) or {}
             spec = it.get("spec", {}) or {}
             status = it.get("status", {}) or {}
+            labels = meta.get("labels", {}) or {}
             out.append(
                 {
                     "name": meta.get("name"),
@@ -548,6 +549,9 @@ class VcfAutomationClient:
                     "imageName": spec.get("imageName", ""),
                     "storageClass": spec.get("storageClass", ""),
                     "primaryIp": (status.get("network") or {}).get("primaryIP4", ""),
+                    # Present when this VM is a node of a VKS (Cluster API)
+                    # cluster rather than a standalone VM Service VM.
+                    "vksClusterName": labels.get("cluster.x-k8s.io/cluster-name", ""),
                     "createdAt": meta.get("creationTimestamp"),
                 }
             )
@@ -612,6 +616,118 @@ class VcfAutomationClient:
                     f"VirtualMachine fetch failed ({resp.status_code}) for '{name}': {resp.text[:300]}"
                 )
         raise VcfAutomationError(f"VirtualMachine '{name}' not found in namespace '{namespace}'.")
+
+    def get_namespace_virtual_machine_raw(
+        self, org_name: str, endpoint_url: str, namespace: str, name: str
+    ) -> dict[str, Any]:
+        """The full, unnormalized manifest - for the "view YAML" action."""
+        for gv in self.VM_OPERATOR_VERSIONS:
+            resp = self._ns_request(
+                org_name, endpoint_url, "GET", f"/apis/{gv}/namespaces/{namespace}/virtualmachines/{name}"
+            )
+            if resp.status_code == 200:
+                raw = resp.json()
+                raw.get("metadata", {}).pop("managedFields", None)
+                return raw
+            if resp.status_code != 404:
+                raise VcfAutomationError(
+                    f"VirtualMachine fetch failed ({resp.status_code}) for '{name}': {resp.text[:300]}"
+                )
+        raise VcfAutomationError(f"VirtualMachine '{name}' not found in namespace '{namespace}'.")
+
+    def open_namespace_vm_web_console(
+        self, org_name: str, endpoint_url: str, namespace: str, name: str
+    ) -> dict[str, Any]:
+        """Open a one-time browser web console session for a VM.
+
+        Per vm-operator's own docs (vm-operator.readthedocs.io, "VM Web
+        Console"): submit an RSA-OAEP(SHA-512) public key as
+        VirtualMachineWebConsoleRequest.spec.publicKey; the controller
+        returns, in status.response, a base64-encoded WebMKS ticket URL
+        encrypted with that key, plus status.proxyAddr. The decrypted
+        WebMKS URL's host/port/ticket are then combined with proxyAddr into
+        the browser-facing console URL:
+          https://<proxyAddr>/vm/web-console/proxy?host=<host>&port=<port>
+            &ticket=<ticket>&uuid=<request-uid>&namespace=<namespace>
+        """
+        import base64
+        import time as _time
+        from urllib.parse import urlparse
+
+        from cryptography.hazmat.primitives import hashes, serialization
+        from cryptography.hazmat.primitives.asymmetric import padding, rsa
+
+        private_key = rsa.generate_private_key(public_exponent=65537, key_size=2048)
+        public_pem = private_key.public_key().public_bytes(
+            encoding=serialization.Encoding.PEM,
+            format=serialization.PublicFormat.SubjectPublicKeyInfo,
+        ).decode()
+
+        gv = self.VM_OPERATOR_VERSIONS[0]
+        req_name = self.instance_name(f"{name}-console-{int(_time.time())}")
+        create_resp = self._ns_request(
+            org_name,
+            endpoint_url,
+            "POST",
+            f"/apis/{gv}/namespaces/{namespace}/virtualmachinewebconsolerequests",
+            json={
+                "apiVersion": gv,
+                "kind": "VirtualMachineWebConsoleRequest",
+                "metadata": {"name": req_name, "namespace": namespace},
+                "spec": {"name": name, "publicKey": public_pem},
+            },
+        )
+        if create_resp.status_code >= 400:
+            raise VcfAutomationError(
+                f"WebConsoleRequest create failed ({create_resp.status_code}) for '{name}': "
+                f"{create_resp.text[:400]}"
+            )
+        request_uid = (create_resp.json().get("metadata") or {}).get("uid", "")
+
+        encrypted_response = None
+        proxy_addr = None
+        try:
+            for _ in range(20):
+                get_resp = self._ns_request(
+                    org_name,
+                    endpoint_url,
+                    "GET",
+                    f"/apis/{gv}/namespaces/{namespace}/virtualmachinewebconsolerequests/{req_name}",
+                )
+                if get_resp.status_code == 200:
+                    status = get_resp.json().get("status") or {}
+                    encrypted_response = status.get("response")
+                    proxy_addr = status.get("proxyAddr")
+                    if encrypted_response and proxy_addr:
+                        break
+                _time.sleep(0.5)
+        finally:
+            # Best-effort cleanup; the request is short-lived/single-use anyway.
+            self._ns_request(
+                org_name,
+                endpoint_url,
+                "DELETE",
+                f"/apis/{gv}/namespaces/{namespace}/virtualmachinewebconsolerequests/{req_name}",
+            )
+
+        if not encrypted_response or not proxy_addr:
+            raise VcfAutomationError("웹 콘솔 티켓 발급이 시간 내에 완료되지 않았습니다. 다시 시도하세요.")
+
+        decrypted = private_key.decrypt(
+            base64.b64decode(encrypted_response),
+            padding.OAEP(mgf=padding.MGF1(algorithm=hashes.SHA512()), algorithm=hashes.SHA512(), label=None),
+        ).decode("utf-8")
+
+        parsed = urlparse(decrypted)
+        host = parsed.hostname or ""
+        port = parsed.port or 443
+        ticket = parsed.path.rsplit("/", 1)[-1]
+
+        console_url = (
+            f"https://{proxy_addr}/vm/web-console/proxy?host={host}&port={port}"
+            f"&ticket={ticket}&uuid={request_uid}&namespace={namespace}"
+        )
+        return {"consoleUrl": console_url}
 
     def list_namespace_vm_images(
         self, org_name: str, endpoint_url: str, namespace: str
@@ -699,28 +815,39 @@ class VcfAutomationClient:
         namespace: str,
         name: str,
         class_name: str,
-        image_name: str,
         storage_class: str,
         power_on: bool = True,
+        image_name: Optional[str] = None,
         guest_id: Optional[str] = None,
         group_name: Optional[str] = None,
         zone: Optional[str] = None,
         boot_disk_capacity_gb: Optional[int] = None,
         boot_disk_pvc_name: Optional[str] = None,
+        min_hardware_version: Optional[int] = None,
+        cdrom_image_name: Optional[str] = None,
+        cdrom_image_kind: Optional[str] = None,
     ) -> dict[str, Any]:
         gv = self.VM_OPERATOR_VERSIONS[0]
         spec: dict[str, Any] = {
             "className": class_name,
-            "imageName": image_name,
             "storageClass": storage_class,
             "powerState": "PoweredOn" if power_on else "PoweredOff",
         }
+        # imageName: the OVF/template image a VM is cloned from. ISO
+        # deployments have no such image - they boot off a mounted CD-ROM
+        # instead (spec.hardware.cdrom below), so this is omitted for ISO;
+        # vm-operator's mutation webhook then mirrors the CD-ROM's ISO image
+        # into spec.image/imageName itself (confirmed via dry-run).
+        if image_name:
+            spec["imageName"] = image_name
         # guestID: required when deploying from an ISO, which has no embedded
         # OVF guest-OS metadata for vm-operator to infer it from.
         if guest_id:
             spec["guestID"] = guest_id
         if group_name:
             spec["groupName"] = group_name
+        if min_hardware_version:
+            spec["minHardwareVersion"] = min_hardware_version
         if boot_disk_capacity_gb:
             # Only takes effect for OVF-deployed VMs - vm-operator's own docs
             # say this is ignored when the VM is deployed from an ISO with
@@ -733,6 +860,20 @@ class VcfAutomationClient:
             spec["volumes"] = [
                 {"name": "boot-disk", "persistentVolumeClaim": {"claimName": boot_disk_pvc_name}}
             ]
+        if cdrom_image_name:
+            # Actually mount the selected ISO as a CD-ROM device - each
+            # device requires a reference to an ISO-type VirtualMachineImage
+            # or ClusterVirtualMachineImage as backing (verified via schema
+            # + dry-run).
+            spec["hardware"] = {
+                "cdrom": [
+                    {
+                        "name": "cdrom0",
+                        "image": {"kind": cdrom_image_kind or "VirtualMachineImage", "name": cdrom_image_name},
+                        "connected": True,
+                    }
+                ]
+            }
 
         metadata: dict[str, Any] = {"name": name, "namespace": namespace}
         if zone:

@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
 import { api } from "../api/client.js";
 import VmDetailDrawer from "./VmDetailDrawer.jsx";
+import VmYamlDrawer from "./VmYamlDrawer.jsx";
 import CreateVmDrawer from "./CreateVmDrawer.jsx";
 import CreateVmGroupDrawer from "./CreateVmGroupDrawer.jsx";
 
@@ -137,7 +138,17 @@ function OverviewPanel({ ns }) {
   );
 }
 
-function ResourceTable({ kind, rows, onRowClick, selected, onToggleSelect }) {
+function ResourceTable({
+  kind,
+  rows,
+  onRowClick,
+  selected,
+  onToggleSelect,
+  menuOpenFor,
+  onToggleMenu,
+  onYaml,
+  onConsole,
+}) {
   if (kind === "vmservice") {
     return (
       <table className="table">
@@ -149,6 +160,7 @@ function ResourceTable({ kind, rows, onRowClick, selected, onToggleSelect }) {
             <th>클래스</th>
             <th>이미지</th>
             <th>IP</th>
+            <th style={{ width: 36 }} />
           </tr>
         </thead>
         <tbody>
@@ -173,11 +185,47 @@ function ResourceTable({ kind, rows, onRowClick, selected, onToggleSelect }) {
                   )}
                 </td>
               )}
-              <td className="mono">{r.name}</td>
+              <td className="mono">
+                {r.name}
+                {r.vksClusterName && (
+                  <span className="badge" style={{ marginLeft: 6 }}>
+                    VKS: {r.vksClusterName}
+                  </span>
+                )}
+              </td>
               <td>{r.powerState || "—"}</td>
               <td>{r.className || "—"}</td>
               <td className="mono">{r.imageName || "—"}</td>
               <td className="mono">{r.primaryIp || "—"}</td>
+              <td onClick={(e) => e.stopPropagation()} style={{ position: "relative" }}>
+                <button
+                  className="row-menu-btn"
+                  onClick={() => onToggleMenu?.(r.name)}
+                  aria-label="더보기"
+                >
+                  ⋯
+                </button>
+                {menuOpenFor === r.name && (
+                  <div className="row-menu">
+                    <button
+                      onClick={() => {
+                        onToggleMenu?.(null);
+                        onYaml?.(r.name);
+                      }}
+                    >
+                      YAML 보기
+                    </button>
+                    <button
+                      onClick={() => {
+                        onToggleMenu?.(null);
+                        onConsole?.(r.name);
+                      }}
+                    >
+                      웹 콘솔 열기
+                    </button>
+                  </div>
+                )}
+              </td>
             </tr>
           ))}
         </tbody>
@@ -364,6 +412,41 @@ export default function ProjectsPage({ orgId, projectId, projects = [] }) {
   const [deletingGroups, setDeletingGroups] = useState(false);
   const [groupDeleteError, setGroupDeleteError] = useState(null);
 
+  const [hideVksNodes, setHideVksNodes] = useState(false);
+  const [menuOpenFor, setMenuOpenFor] = useState(null);
+  const [yamlVmName, setYamlVmName] = useState(null);
+  const [consoleBusyVm, setConsoleBusyVm] = useState(null);
+  const [consoleError, setConsoleError] = useState(null);
+
+  useEffect(() => {
+    if (!menuOpenFor) return;
+    const handler = (e) => {
+      if (!e.target.closest(".row-menu") && !e.target.closest(".row-menu-btn")) {
+        setMenuOpenFor(null);
+      }
+    };
+    window.addEventListener("click", handler);
+    return () => window.removeEventListener("click", handler);
+  }, [menuOpenFor]);
+
+  const handleOpenConsole = async (vmName) => {
+    // Open a blank tab synchronously (on the click) so the browser doesn't
+    // treat the later navigation as an unrequested popup; fill it in once
+    // the console URL comes back.
+    const win = window.open("", "_blank");
+    setConsoleBusyVm(vmName);
+    setConsoleError(null);
+    try {
+      const { consoleUrl } = await api.openVmConsole(orgId, projectId, namespaceName, vmName);
+      if (win) win.location.href = consoleUrl;
+    } catch (e) {
+      if (win) win.close();
+      setConsoleError(`${vmName}: ${e.message}`);
+    } finally {
+      setConsoleBusyVm(null);
+    }
+  };
+
   useEffect(() => {
     setNamespaceName("");
     setNamespaces([]);
@@ -482,6 +565,8 @@ export default function ProjectsPage({ orgId, projectId, projects = [] }) {
 
   const selectedNamespace = namespaces.find((n) => n.name === namespaceName);
   const currentProject = projects.find((p) => p.name === projectId);
+  const displayedResources =
+    tab === "vmservice" && hideVksNodes ? resources.filter((r) => !r.vksClusterName) : resources;
 
   return (
     <div className="project-main project-main-full">
@@ -548,26 +633,51 @@ export default function ProjectsPage({ orgId, projectId, projects = [] }) {
             {tab === "overview" && <OverviewPanel ns={selectedNamespace} />}
 
             {tab === "vmservice" && (
-              <div className="tab-content-toolbar">
-                <button className="btn" onClick={() => setResourceRefreshKey((k) => k + 1)}>
-                  새로고침
-                </button>
-                <button
-                  className="btn btn-danger"
-                  onClick={handleDeleteSelected}
-                  disabled={selectedVmNames.size === 0 || deleting}
-                >
-                  {deleting ? "삭제 중…" : `삭제 (${selectedVmNames.size})`}
-                </button>
-                <button className="btn btn-primary" onClick={() => setShowCreateVm(true)}>
-                  + 생성
-                </button>
+              <div className="tab-content-toolbar" style={{ justifyContent: "space-between" }}>
+                <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+                  <button
+                    type="button"
+                    role="switch"
+                    aria-checked={hideVksNodes}
+                    className={`toggle-switch ${hideVksNodes ? "on" : ""}`}
+                    onClick={() => setHideVksNodes((v) => !v)}
+                  >
+                    <span className="toggle-knob" />
+                  </button>
+                  <span className="hint">VKS 클러스터 노드 숨기기</span>
+                </div>
+                <div style={{ display: "flex", gap: 8 }}>
+                  <button className="btn" onClick={() => setResourceRefreshKey((k) => k + 1)}>
+                    새로고침
+                  </button>
+                  <button
+                    className="btn btn-danger"
+                    onClick={handleDeleteSelected}
+                    disabled={selectedVmNames.size === 0 || deleting}
+                  >
+                    {deleting ? "삭제 중…" : `삭제 (${selectedVmNames.size})`}
+                  </button>
+                  <button className="btn btn-primary" onClick={() => setShowCreateVm(true)}>
+                    + 생성
+                  </button>
+                </div>
               </div>
             )}
 
             {tab === "vmservice" && deleteError && (
               <div className="hint" style={{ color: "var(--accent-red)", marginBottom: 10 }}>
                 삭제 실패: {deleteError}
+              </div>
+            )}
+
+            {tab === "vmservice" && consoleError && (
+              <div className="hint" style={{ color: "var(--accent-red)", marginBottom: 10 }}>
+                웹 콘솔 열기 실패: {consoleError}
+              </div>
+            )}
+            {tab === "vmservice" && consoleBusyVm && (
+              <div className="hint" style={{ marginBottom: 10 }}>
+                {consoleBusyVm} 웹 콘솔 여는 중…
               </div>
             )}
 
@@ -603,13 +713,13 @@ export default function ProjectsPage({ orgId, projectId, projects = [] }) {
                 {error}
               </div>
             )}
-            {tab !== "overview" && !loadingResources && !error && resources.length === 0 && (
+            {tab !== "overview" && !loadingResources && !error && displayedResources.length === 0 && (
               <div className="empty-state">이 Namespace에는 해당 항목이 없습니다.</div>
             )}
-            {tab !== "overview" && !loadingResources && !error && resources.length > 0 && (
+            {tab !== "overview" && !loadingResources && !error && displayedResources.length > 0 && (
               <ResourceTable
                 kind={tab}
-                rows={resources}
+                rows={displayedResources}
                 onRowClick={tab === "vmservice" ? setSelectedVmName : undefined}
                 selected={
                   tab === "vmservice"
@@ -625,6 +735,10 @@ export default function ProjectsPage({ orgId, projectId, projects = [] }) {
                     ? toggleVmGroupSelection
                     : undefined
                 }
+                menuOpenFor={tab === "vmservice" ? menuOpenFor : undefined}
+                onToggleMenu={tab === "vmservice" ? setMenuOpenFor : undefined}
+                onYaml={tab === "vmservice" ? setYamlVmName : undefined}
+                onConsole={tab === "vmservice" ? handleOpenConsole : undefined}
               />
             )}
           </div>
@@ -638,6 +752,16 @@ export default function ProjectsPage({ orgId, projectId, projects = [] }) {
           namespace={namespaceName}
           vmName={selectedVmName}
           onClose={() => setSelectedVmName(null)}
+        />
+      )}
+
+      {yamlVmName && (
+        <VmYamlDrawer
+          orgId={orgId}
+          projectId={projectId}
+          namespace={namespaceName}
+          vmName={yamlVmName}
+          onClose={() => setYamlVmName(null)}
         />
       )}
 

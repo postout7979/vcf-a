@@ -29,6 +29,7 @@ export default function CreateVmDrawer({
   const [guestID, setGuestID] = useState("");
   const [bootDiskGb, setBootDiskGb] = useState("");
   const [isoBootDiskGb, setIsoBootDiskGb] = useState("20");
+  const [minHardwareVersion, setMinHardwareVersion] = useState("22");
 
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState(null);
@@ -73,12 +74,16 @@ export default function CreateVmDrawer({
         imageName,
         storageClass,
         powerOn,
+        minHardwareVersion: Number(minHardwareVersion),
       };
       if (mode === "iso") {
         payload.guestID = guestID;
         if (zone) payload.zone = zone;
         if (groupName) payload.groupName = groupName;
         payload.isoBootDiskGb = Number(isoBootDiskGb);
+        // Backend mounts this image as the VM's CD-ROM; it needs the scope
+        // (namespace vs cluster) to build the correct image kind reference.
+        payload.isoImageScope = images.find((img) => img.name === imageName)?.scope || "namespace";
       }
       if (mode === "ovf" && bootDiskGb) {
         payload.bootDiskCapacityGb = Number(bootDiskGb);
@@ -210,6 +215,19 @@ export default function CreateVmDrawer({
             </div>
 
             <div className="field">
+              <label>하드웨어 버전 *</label>
+              <input
+                type="number"
+                required
+                min="13"
+                step="1"
+                value={minHardwareVersion}
+                onChange={(e) => setMinHardwareVersion(e.target.value)}
+              />
+              <span className="hint">VCF 9 기본값은 22입니다.</span>
+            </div>
+
+            <div className="field">
               <label>이미지 ({mode.toUpperCase()}) *</label>
               <select
                 required
@@ -235,6 +253,9 @@ export default function CreateVmDrawer({
                 <span className="hint">
                   이 Namespace/클러스터에는 {mode.toUpperCase()} 타입 이미지가 없습니다.
                 </span>
+              )}
+              {mode === "iso" && (
+                <span className="hint">선택한 ISO는 VM의 CD-ROM 장치로 마운트됩니다.</span>
               )}
             </div>
 

@@ -1,5 +1,6 @@
 from typing import Optional
 
+import yaml
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
 from sqlmodel import Session, select
@@ -116,6 +117,39 @@ def get_virtual_machine(
         raise HTTPException(status_code=502, detail=str(exc)) from exc
 
 
+@router.get("/{org_id}/{project}/namespaces/{namespace}/vmservice/{vm_name}/yaml")
+def get_virtual_machine_yaml(
+    org_id: str,
+    project: str,
+    namespace: str,
+    vm_name: str,
+    session: Session = Depends(get_session),
+):
+    org_name = _org_name(org_id, session)
+    try:
+        endpoint = _namespace_endpoint(org_name, project, namespace)
+        raw = vcf_client.get_namespace_virtual_machine_raw(org_name, endpoint, namespace, vm_name)
+        return {"yaml": yaml.safe_dump(raw, sort_keys=False, default_flow_style=False)}
+    except VcfAutomationError as exc:
+        raise HTTPException(status_code=502, detail=str(exc)) from exc
+
+
+@router.post("/{org_id}/{project}/namespaces/{namespace}/vmservice/{vm_name}/console")
+def open_virtual_machine_console(
+    org_id: str,
+    project: str,
+    namespace: str,
+    vm_name: str,
+    session: Session = Depends(get_session),
+):
+    org_name = _org_name(org_id, session)
+    try:
+        endpoint = _namespace_endpoint(org_name, project, namespace)
+        return vcf_client.open_namespace_vm_web_console(org_name, endpoint, namespace, vm_name)
+    except VcfAutomationError as exc:
+        raise HTTPException(status_code=502, detail=str(exc)) from exc
+
+
 @router.get("/{org_id}/{project}/namespaces/{namespace}/vm-images")
 def list_vm_images(
     org_id: str,
@@ -174,6 +208,8 @@ class CreateVmRequest(BaseModel):
     zone: Optional[str] = None
     bootDiskCapacityGb: Optional[int] = None
     isoBootDiskGb: Optional[int] = None
+    isoImageScope: Optional[str] = None
+    minHardwareVersion: Optional[int] = None
 
 
 @router.post("/{org_id}/{project}/namespaces/{namespace}/vmservice")
@@ -190,8 +226,10 @@ def create_virtual_machine(
     except VcfAutomationError as exc:
         raise HTTPException(status_code=502, detail=str(exc)) from exc
 
+    is_iso = bool(body.isoBootDiskGb)
+
     boot_pvc_name = None
-    if body.isoBootDiskGb:
+    if is_iso:
         # ISO deployments have no OVF-provided boot disk, so it's a separate
         # PVC created up front and attached to the VM as a volume.
         boot_pvc_name = f"{body.name}-boot"
@@ -209,14 +247,21 @@ def create_virtual_machine(
             namespace,
             body.name,
             body.className,
-            body.imageName,
             body.storageClass,
             body.powerOn,
+            image_name=None if is_iso else body.imageName,
             guest_id=body.guestID,
             group_name=body.groupName,
             zone=body.zone,
             boot_disk_capacity_gb=body.bootDiskCapacityGb,
             boot_disk_pvc_name=boot_pvc_name,
+            min_hardware_version=body.minHardwareVersion,
+            cdrom_image_name=body.imageName if is_iso else None,
+            cdrom_image_kind=(
+                "ClusterVirtualMachineImage" if body.isoImageScope == "cluster" else "VirtualMachineImage"
+            )
+            if is_iso
+            else None,
         )
     except VcfAutomationError as exc:
         if boot_pvc_name:
