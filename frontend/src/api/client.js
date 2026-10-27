@@ -92,6 +92,78 @@ export const api = {
       )}/vmgroup/${encodeURIComponent(groupName)}`,
       { method: "DELETE" }
     ),
+  listClusterClasses: (orgId, project, namespace) =>
+    request(
+      `/projects/${encodeURIComponent(orgId)}/${encodeURIComponent(project)}/namespaces/${encodeURIComponent(
+        namespace
+      )}/cluster-classes`
+    ),
+  listKubernetesVersions: (orgId, project, namespace) =>
+    request(
+      `/projects/${encodeURIComponent(orgId)}/${encodeURIComponent(project)}/namespaces/${encodeURIComponent(
+        namespace
+      )}/kubernetes-versions`
+    ),
+  listSubnetSets: (orgId, project, namespace) =>
+    request(
+      `/projects/${encodeURIComponent(orgId)}/${encodeURIComponent(project)}/namespaces/${encodeURIComponent(
+        namespace
+      )}/subnet-sets`
+    ),
+  createKubernetesCluster: (orgId, project, namespace, payload) =>
+    request(
+      `/projects/${encodeURIComponent(orgId)}/${encodeURIComponent(project)}/namespaces/${encodeURIComponent(
+        namespace
+      )}/kubernetes`,
+      { method: "POST", body: JSON.stringify(payload) }
+    ),
+  getKubernetesCluster: (orgId, project, namespace, name) =>
+    request(
+      `/projects/${encodeURIComponent(orgId)}/${encodeURIComponent(project)}/namespaces/${encodeURIComponent(
+        namespace
+      )}/kubernetes/${encodeURIComponent(name)}`
+    ),
+  updateKubernetesCluster: (orgId, project, namespace, name, payload) =>
+    request(
+      `/projects/${encodeURIComponent(orgId)}/${encodeURIComponent(project)}/namespaces/${encodeURIComponent(
+        namespace
+      )}/kubernetes/${encodeURIComponent(name)}`,
+      { method: "PATCH", body: JSON.stringify(payload) }
+    ),
+  deleteKubernetesCluster: (orgId, project, namespace, name) =>
+    request(
+      `/projects/${encodeURIComponent(orgId)}/${encodeURIComponent(project)}/namespaces/${encodeURIComponent(
+        namespace
+      )}/kubernetes/${encodeURIComponent(name)}`,
+      { method: "DELETE" }
+    ),
+  createLoadBalancer: (orgId, project, namespace, payload) =>
+    request(
+      `/projects/${encodeURIComponent(orgId)}/${encodeURIComponent(project)}/namespaces/${encodeURIComponent(
+        namespace
+      )}/loadbalancer`,
+      { method: "POST", body: JSON.stringify(payload) }
+    ),
+  getLoadBalancer: (orgId, project, namespace, name) =>
+    request(
+      `/projects/${encodeURIComponent(orgId)}/${encodeURIComponent(project)}/namespaces/${encodeURIComponent(
+        namespace
+      )}/loadbalancer/${encodeURIComponent(name)}`
+    ),
+  updateLoadBalancer: (orgId, project, namespace, name, payload) =>
+    request(
+      `/projects/${encodeURIComponent(orgId)}/${encodeURIComponent(project)}/namespaces/${encodeURIComponent(
+        namespace
+      )}/loadbalancer/${encodeURIComponent(name)}`,
+      { method: "PATCH", body: JSON.stringify(payload) }
+    ),
+  deleteLoadBalancer: (orgId, project, namespace, name) =>
+    request(
+      `/projects/${encodeURIComponent(orgId)}/${encodeURIComponent(project)}/namespaces/${encodeURIComponent(
+        namespace
+      )}/loadbalancer/${encodeURIComponent(name)}`,
+      { method: "DELETE" }
+    ),
   deploy: (orgId, vcfItemId, payload) =>
     request(`/deploy/${encodeURIComponent(orgId)}/${encodeURIComponent(vcfItemId)}`, {
       method: "POST",

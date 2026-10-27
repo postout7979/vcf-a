@@ -94,6 +94,38 @@ class PortalVmGroup(SQLModel, table=True):
     created_at: datetime = Field(default_factory=datetime.utcnow)
 
 
+class PortalKubernetesCluster(SQLModel, table=True):
+    """Same registry concept as PortalVirtualMachine, for VKS (Cluster API)
+    clusters created through the Kubernetes tab."""
+
+    __table_args__ = (
+        UniqueConstraint("org_id", "project", "namespace", "cluster_name", name="uq_portal_cluster"),
+    )
+
+    id: Optional[int] = Field(default=None, primary_key=True)
+    org_id: str = Field(index=True)
+    project: str
+    namespace: str
+    cluster_name: str
+    created_at: datetime = Field(default_factory=datetime.utcnow)
+
+
+class PortalLoadBalancer(SQLModel, table=True):
+    """Same registry concept as PortalVirtualMachine, for LoadBalancer
+    Services created through the Load Balancer tab."""
+
+    __table_args__ = (
+        UniqueConstraint("org_id", "project", "namespace", "service_name", name="uq_portal_lb"),
+    )
+
+    id: Optional[int] = Field(default=None, primary_key=True)
+    org_id: str = Field(index=True)
+    project: str
+    namespace: str
+    service_name: str
+    created_at: datetime = Field(default_factory=datetime.utcnow)
+
+
 class DeploymentRecord(SQLModel, table=True):
     id: Optional[int] = Field(default=None, primary_key=True)
     org_id: str = Field(index=True, default="")

@@ -931,11 +931,15 @@ class VcfAutomationClient:
             f"VirtualMachineGroup delete failed ({resp.status_code}) for '{name}': {resp.text[:400]}"
         )
 
+    CLUSTER_API_VERSIONS = ["cluster.x-k8s.io/v1beta2", "cluster.x-k8s.io/v1beta1"]
+    TKR_API_VERSIONS = ["run.tanzu.vmware.com/v1alpha3"]
+
     def list_namespace_kubernetes_clusters(
         self, org_name: str, endpoint_url: str, namespace: str
     ) -> list[dict[str, Any]]:
-        versions = ["cluster.x-k8s.io/v1beta2", "cluster.x-k8s.io/v1beta1"]
-        items = self._ns_list_versioned(org_name, endpoint_url, namespace, versions, "clusters")
+        items = self._ns_list_versioned(
+            org_name, endpoint_url, namespace, self.CLUSTER_API_VERSIONS, "clusters"
+        )
         out = []
         for it in items:
             meta = it.get("metadata", {}) or {}
@@ -957,6 +961,324 @@ class VcfAutomationClient:
                 }
             )
         return out
+
+    def _find_namespace_object(
+        self,
+        org_name: str,
+        endpoint_url: str,
+        namespace: str,
+        group_versions: list[str],
+        plural: str,
+        name: str,
+    ) -> tuple[str, dict[str, Any]]:
+        """Return (apiVersion, raw object) for a named namespaced custom
+        resource, trying each apiVersion newest-first (same reasoning as
+        _ns_list_versioned: a 404 here means that version isn't served in
+        this environment, not necessarily that the object is missing)."""
+        for gv in group_versions:
+            resp = self._ns_request(
+                org_name, endpoint_url, "GET", f"/apis/{gv}/namespaces/{namespace}/{plural}/{name}"
+            )
+            if resp.status_code == 200:
+                return gv, resp.json()
+            if resp.status_code != 404:
+                raise VcfAutomationError(
+                    f"{plural}/{name} fetch failed ({resp.status_code}): {resp.text[:300]}"
+                )
+        raise VcfAutomationError(f"'{name}' not found in namespace '{namespace}' ({plural}).")
+
+    def list_namespace_cluster_classes(
+        self, org_name: str, endpoint_url: str, namespace: str
+    ) -> list[dict[str, Any]]:
+        """ClusterClasses available in this namespace, used to populate the
+        "VKS 클러스터 생성" form - each exposes the worker machine-deployment
+        "class" names a new Cluster's spec.topology.workers must reference."""
+        items = self._ns_list_versioned(
+            org_name, endpoint_url, namespace, self.CLUSTER_API_VERSIONS, "clusterclasses"
+        )
+        out = []
+        for it in items:
+            meta = it.get("metadata", {}) or {}
+            spec = it.get("spec", {}) or {}
+            workers = (spec.get("workers") or {}).get("machineDeployments") or []
+            out.append(
+                {
+                    "name": meta.get("name"),
+                    # ClusterClasses are namespaced, and a Cluster's
+                    # topology.classRef (CAPI v1beta2) must point at the
+                    # exact namespace the class lives in - confirmed live,
+                    # this is the target namespace itself for the classes
+                    # projected into it, not the vmware-system-* namespace
+                    # that pre-existing clusters may reference.
+                    "namespace": meta.get("namespace") or namespace,
+                    "workerClasses": [w.get("class") for w in workers if w.get("class")],
+                }
+            )
+        return out
+
+    def list_namespace_subnet_sets(
+        self, org_name: str, endpoint_url: str, namespace: str
+    ) -> list[dict[str, Any]]:
+        """NSX SubnetSets available in this namespace - used to populate the
+        (optional) network choice on the "VKS 클러스터 생성" form. Confirmed
+        live: a Cluster's topology.variables "networks" entry can reference
+        one of these by name, or be omitted entirely to fall back to
+        whatever the cluster's runtime-extension defaults to."""
+        resp = self._ns_request(
+            org_name, endpoint_url, "GET", f"/apis/crd.nsx.vmware.com/v1alpha1/namespaces/{namespace}/subnetsets"
+        )
+        if resp.status_code == 404:
+            return []
+        if resp.status_code >= 400:
+            raise VcfAutomationError(f"SubnetSet list failed ({resp.status_code}): {resp.text[:300]}")
+        out = []
+        for it in resp.json().get("items", []):
+            meta = it.get("metadata", {}) or {}
+            spec = it.get("spec", {}) or {}
+            out.append({"name": meta.get("name"), "accessMode": spec.get("accessMode", "")})
+        return out
+
+    def list_kubernetes_versions(self, org_name: str, endpoint_url: str) -> list[dict[str, Any]]:
+        """Supported Kubernetes versions (TanzuKubernetesRelease) - cluster-
+        scoped, not namespaced. Not every environment has this CRD installed
+        (older/alternate VKS setups), so a 404 just yields an empty list and
+        the create form falls back to a free-text version field."""
+        for gv in self.TKR_API_VERSIONS:
+            resp = self._ns_request(org_name, endpoint_url, "GET", f"/apis/{gv}/tanzukubernetesreleases")
+            if resp.status_code == 404:
+                continue
+            if resp.status_code >= 400:
+                raise VcfAutomationError(
+                    f"TanzuKubernetesRelease list failed ({resp.status_code}): {resp.text[:300]}"
+                )
+            out = []
+            for it in resp.json().get("items", []):
+                meta = it.get("metadata", {}) or {}
+                spec = it.get("spec", {}) or {}
+                status = it.get("status", {}) or {}
+                conditions = status.get("conditions") or []
+                compatible = any(
+                    c.get("type") == "Compatible" and c.get("status") == "True" for c in conditions
+                )
+                deprecated = any(
+                    c.get("type") == "Deprecated" and c.get("status") == "True" for c in conditions
+                )
+                out.append(
+                    {
+                        "name": meta.get("name"),
+                        "version": spec.get("version") or meta.get("name"),
+                        "compatible": compatible,
+                        "deprecated": deprecated,
+                    }
+                )
+            out.sort(key=lambda v: v["version"], reverse=True)
+            return out
+        return []
+
+    @staticmethod
+    def _normalize_cluster_detail(it: dict[str, Any]) -> dict[str, Any]:
+        meta = it.get("metadata", {}) or {}
+        spec = it.get("spec", {}) or {}
+        status = it.get("status", {}) or {}
+        topology = spec.get("topology", {}) or {}
+        workers = (topology.get("workers") or {}).get("machineDeployments") or []
+        ready = any(
+            c.get("type") in ("Ready", "Available") and c.get("status") == "True"
+            for c in (status.get("conditions") or [])
+        )
+        # CAPI v1beta1 referenced the ClusterClass by a bare "class" string;
+        # v1beta2 replaced it with "classRef": {name, namespace} - confirmed
+        # live against a v1beta2 cluster, which had no "class" key at all.
+        class_ref = topology.get("classRef") or {}
+        return {
+            "name": meta.get("name"),
+            "ready": ready,
+            "clusterClass": class_ref.get("name") or topology.get("class", ""),
+            "kubernetesVersion": topology.get("version", ""),
+            "controlPlaneEndpoint": (spec.get("controlPlaneEndpoint") or {}).get("host", ""),
+            "controlPlaneReplicas": (topology.get("controlPlane") or {}).get("replicas"),
+            "workers": [
+                {"name": w.get("name"), "class": w.get("class"), "replicas": w.get("replicas")}
+                for w in workers
+            ],
+            "createdAt": meta.get("creationTimestamp"),
+        }
+
+    def get_namespace_kubernetes_cluster(
+        self, org_name: str, endpoint_url: str, namespace: str, name: str
+    ) -> dict[str, Any]:
+        _, raw = self._find_namespace_object(
+            org_name, endpoint_url, namespace, self.CLUSTER_API_VERSIONS, "clusters", name
+        )
+        return self._normalize_cluster_detail(raw)
+
+    def create_namespace_kubernetes_cluster(
+        self,
+        org_name: str,
+        endpoint_url: str,
+        namespace: str,
+        name: str,
+        cluster_class: str,
+        cluster_class_namespace: str,
+        kubernetes_version: str,
+        control_plane_replicas: int,
+        worker_class: str,
+        worker_replicas: int,
+        vm_class: str,
+        storage_class: str,
+        worker_name: str = "md-0",
+        network_subnet_set: Optional[str] = None,
+    ) -> dict[str, Any]:
+        """vmClass/storageClass are mandatory topology.variables for every
+        live cluster inspected, and the only two confirmed (via a live
+        dryRun=All admission check) to be accepted across every ClusterClass
+        version in this environment - other variable names seen on existing
+        clusters (networks/bootstrapAddons/kubernetes/vsphereOptions) are
+        rejected outright with "variable is not defined" on older class
+        versions, since VMware's "builtin-generic" ClusterClasses resolve
+        their variable schema through a runtime-extension webhook rather
+        than declaring it in spec.variables - there is no API to introspect
+        which extra variables a given class/version actually supports, so
+        only the universally-safe pair is always sent. "networks" is the one
+        exception: a VPC namespace without SNAT configured rejects the
+        default (private) network outright ("cluster can not be deployed
+        with default network(private) in a VPC namespace without SNAT",
+        confirmed live), so it's sent whenever the caller picks a SubnetSet -
+        this can still fail on a class version that doesn't define it, same
+        as above, surfaced as a plain error rather than guessed around.
+
+        spec.clusterNetwork is also required (confirmed live: omitting it
+        fails admission with "spec.ClusterNetwork.Services must be
+        defined"); the CIDRs below match every existing cluster inspected
+        in this environment.
+        """
+        variables = [
+            {"name": "vmClass", "value": vm_class},
+            {"name": "storageClass", "value": storage_class},
+        ]
+        if network_subnet_set:
+            variables.append(
+                {
+                    "name": "networks",
+                    "value": {
+                        "interfaces": {
+                            "primary": {
+                                "network": {
+                                    "apiVersion": "crd.nsx.vmware.com/v1alpha1",
+                                    "kind": "SubnetSet",
+                                    "name": network_subnet_set,
+                                }
+                            }
+                        }
+                    },
+                }
+            )
+        topology: dict[str, Any] = {
+            "version": kubernetes_version,
+            "controlPlane": {"replicas": control_plane_replicas},
+            "workers": {
+                "machineDeployments": [
+                    {"class": worker_class, "name": worker_name, "replicas": worker_replicas}
+                ]
+            },
+            "variables": variables,
+        }
+        body: dict[str, Any] = {
+            "kind": "Cluster",
+            "metadata": {"name": name, "namespace": namespace},
+            "spec": {
+                "clusterNetwork": {
+                    "pods": {"cidrBlocks": ["10.95.0.0/16"]},
+                    "services": {"cidrBlocks": ["10.96.0.0/12"]},
+                    "serviceDomain": "cluster.local",
+                },
+                "topology": topology,
+            },
+        }
+        for gv in self.CLUSTER_API_VERSIONS:
+            body["apiVersion"] = gv
+            # v1beta2 replaced the bare "class" string with a "classRef"
+            # object (see _normalize_cluster_detail) - set whichever this
+            # apiVersion expects.
+            if gv == "cluster.x-k8s.io/v1beta1":
+                topology.pop("classRef", None)
+                topology["class"] = cluster_class
+            else:
+                topology.pop("class", None)
+                topology["classRef"] = {"name": cluster_class, "namespace": cluster_class_namespace}
+            resp = self._ns_request(
+                org_name, endpoint_url, "POST", f"/apis/{gv}/namespaces/{namespace}/clusters", json=body
+            )
+            if resp.status_code < 400:
+                return self._normalize_cluster_detail(resp.json())
+            if resp.status_code == 404:
+                continue
+            raise VcfAutomationError(
+                f"Cluster create failed ({resp.status_code}) for '{name}': {resp.text[:400]}"
+            )
+        raise VcfAutomationError(f"Cluster create failed for '{name}': no served apiVersion accepted it.")
+
+    def update_namespace_kubernetes_cluster(
+        self,
+        org_name: str,
+        endpoint_url: str,
+        namespace: str,
+        name: str,
+        control_plane_replicas: Optional[int] = None,
+        workers: Optional[list[dict[str, Any]]] = None,
+    ) -> dict[str, Any]:
+        """Scale an existing Cluster's control-plane and/or worker machine
+        deployments. `workers`, when given, is the full desired list of
+        {name, class, replicas} entries - JSON merge-patch replaces whole
+        arrays, so a partial list would silently drop the others; existing
+        entries not mentioned keep their current class/replicas."""
+        gv, raw = self._find_namespace_object(
+            org_name, endpoint_url, namespace, self.CLUSTER_API_VERSIONS, "clusters", name
+        )
+        topology = ((raw.get("spec") or {}).get("topology")) or {}
+        patch: dict[str, Any] = {"spec": {"topology": {}}}
+        if control_plane_replicas is not None:
+            patch["spec"]["topology"]["controlPlane"] = {"replicas": control_plane_replicas}
+        if workers is not None:
+            existing = (topology.get("workers") or {}).get("machineDeployments") or []
+            by_name = {w.get("name"): dict(w) for w in existing}
+            for w in workers:
+                entry = by_name.get(w["name"], {"name": w["name"], "class": w.get("class", "")})
+                entry["replicas"] = w["replicas"]
+                if w.get("class"):
+                    entry["class"] = w["class"]
+                by_name[w["name"]] = entry
+            patch["spec"]["topology"]["workers"] = {"machineDeployments": list(by_name.values())}
+        resp = self._ns_request(
+            org_name,
+            endpoint_url,
+            "PATCH",
+            f"/apis/{gv}/namespaces/{namespace}/clusters/{name}",
+            json=patch,
+            headers={"Content-Type": "application/merge-patch+json"},
+        )
+        if resp.status_code >= 400:
+            raise VcfAutomationError(
+                f"Cluster update failed ({resp.status_code}) for '{name}': {resp.text[:400]}"
+            )
+        return self._normalize_cluster_detail(resp.json())
+
+    def delete_namespace_kubernetes_cluster(
+        self, org_name: str, endpoint_url: str, namespace: str, name: str
+    ) -> None:
+        for gv in self.CLUSTER_API_VERSIONS:
+            resp = self._ns_request(
+                org_name, endpoint_url, "DELETE", f"/apis/{gv}/namespaces/{namespace}/clusters/{name}"
+            )
+            if resp.status_code in (200, 202):
+                return
+            if resp.status_code == 404:
+                continue
+            raise VcfAutomationError(
+                f"Cluster delete failed ({resp.status_code}) for '{name}': {resp.text[:400]}"
+            )
+        # Every served apiVersion responded 404 - already gone (or never
+        # existed) - treat as success, same as the VM/VM Group delete paths.
 
     def list_namespace_pods(
         self, org_name: str, endpoint_url: str, namespace: str
@@ -1028,6 +1350,116 @@ class VcfAutomationClient:
                 }
             )
         return out
+
+    @staticmethod
+    def _normalize_service_ports(ports: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        return [
+            {
+                "name": p.get("name") or f"port-{i}",
+                "port": p["port"],
+                "targetPort": p.get("targetPort") or p["port"],
+                "protocol": p.get("protocol", "TCP"),
+            }
+            for i, p in enumerate(ports)
+        ]
+
+    def get_namespace_load_balancer(
+        self, org_name: str, endpoint_url: str, namespace: str, name: str
+    ) -> dict[str, Any]:
+        resp = self._ns_request(
+            org_name, endpoint_url, "GET", f"/api/v1/namespaces/{namespace}/services/{name}"
+        )
+        if resp.status_code == 404:
+            raise VcfAutomationError(f"Load Balancer '{name}' not found in namespace '{namespace}'.")
+        if resp.status_code >= 400:
+            raise VcfAutomationError(
+                f"Service fetch failed ({resp.status_code}) for '{name}': {resp.text[:300]}"
+            )
+        it = resp.json()
+        meta = it.get("metadata", {}) or {}
+        spec = it.get("spec", {}) or {}
+        status = it.get("status", {}) or {}
+        ingress = (status.get("loadBalancer") or {}).get("ingress") or []
+        return {
+            "name": meta.get("name"),
+            "clusterIP": spec.get("clusterIP", ""),
+            "externalIps": [i.get("ip") or i.get("hostname") for i in ingress],
+            "selector": spec.get("selector", {}) or {},
+            "ports": [
+                {
+                    "name": p.get("name", ""),
+                    "port": p.get("port"),
+                    "targetPort": p.get("targetPort"),
+                    "protocol": p.get("protocol", "TCP"),
+                }
+                for p in (spec.get("ports") or [])
+            ],
+            "createdAt": meta.get("creationTimestamp"),
+        }
+
+    def create_namespace_load_balancer(
+        self,
+        org_name: str,
+        endpoint_url: str,
+        namespace: str,
+        name: str,
+        selector: dict[str, str],
+        ports: list[dict[str, Any]],
+    ) -> dict[str, Any]:
+        body = {
+            "apiVersion": "v1",
+            "kind": "Service",
+            "metadata": {"name": name, "namespace": namespace},
+            "spec": {
+                "type": "LoadBalancer",
+                "selector": selector,
+                "ports": self._normalize_service_ports(ports),
+            },
+        }
+        resp = self._ns_request(
+            org_name, endpoint_url, "POST", f"/api/v1/namespaces/{namespace}/services", json=body
+        )
+        if resp.status_code >= 400:
+            raise VcfAutomationError(
+                f"Service create failed ({resp.status_code}) for '{name}': {resp.text[:400]}"
+            )
+        return resp.json()
+
+    def update_namespace_load_balancer(
+        self,
+        org_name: str,
+        endpoint_url: str,
+        namespace: str,
+        name: str,
+        selector: dict[str, str],
+        ports: list[dict[str, Any]],
+    ) -> dict[str, Any]:
+        patch = {"spec": {"selector": selector, "ports": self._normalize_service_ports(ports)}}
+        resp = self._ns_request(
+            org_name,
+            endpoint_url,
+            "PATCH",
+            f"/api/v1/namespaces/{namespace}/services/{name}",
+            json=patch,
+            headers={"Content-Type": "application/merge-patch+json"},
+        )
+        if resp.status_code >= 400:
+            raise VcfAutomationError(
+                f"Service update failed ({resp.status_code}) for '{name}': {resp.text[:400]}"
+            )
+        return resp.json()
+
+    def delete_namespace_load_balancer(
+        self, org_name: str, endpoint_url: str, namespace: str, name: str
+    ) -> None:
+        resp = self._ns_request(
+            org_name, endpoint_url, "DELETE", f"/api/v1/namespaces/{namespace}/services/{name}"
+        )
+        if resp.status_code in (200, 202, 404):
+            return
+        raise VcfAutomationError(
+            f"Service delete failed ({resp.status_code}) for '{name}': {resp.text[:400]}"
+        )
 
     NAMESPACE_RESOURCE_KINDS = (
         "vmservice",

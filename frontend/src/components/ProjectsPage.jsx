@@ -4,6 +4,10 @@ import VmDetailDrawer from "./VmDetailDrawer.jsx";
 import VmYamlDrawer from "./VmYamlDrawer.jsx";
 import CreateVmDrawer from "./CreateVmDrawer.jsx";
 import CreateVmGroupDrawer from "./CreateVmGroupDrawer.jsx";
+import CreateKubernetesClusterDrawer from "./CreateKubernetesClusterDrawer.jsx";
+import EditKubernetesClusterDrawer from "./EditKubernetesClusterDrawer.jsx";
+import CreateLoadBalancerDrawer from "./CreateLoadBalancerDrawer.jsx";
+import EditLoadBalancerDrawer from "./EditLoadBalancerDrawer.jsx";
 
 const TABS = [
   { key: "overview", label: "Overview" },
@@ -325,6 +329,7 @@ function ResourceTable({
       <table className="table">
         <thead>
           <tr>
+            {onToggleSelect && <th style={{ width: 28 }} />}
             <th>이름</th>
             <th>상태</th>
             <th>Control Plane Endpoint</th>
@@ -333,7 +338,29 @@ function ResourceTable({
         </thead>
         <tbody>
           {rows.map((r) => (
-            <tr key={r.name}>
+            <tr
+              key={r.name}
+              className="table-row-clickable"
+              onClick={() => onRowClick?.(r.name)}
+            >
+              {onToggleSelect && (
+                <td onClick={(e) => e.stopPropagation()}>
+                  {r.createdByPortal ? (
+                    <input
+                      type="checkbox"
+                      checked={selected?.has(r.name) || false}
+                      onChange={() => onToggleSelect(r.name)}
+                    />
+                  ) : (
+                    <span
+                      className="hint"
+                      title="이 포탈에서 생성한 클러스터만 삭제할 수 있습니다."
+                    >
+                      —
+                    </span>
+                  )}
+                </td>
+              )}
               <td className="mono">{r.name}</td>
               <td>
                 <span className={`badge ${r.ready ? "badge-ok" : ""}`}>
@@ -406,6 +433,7 @@ function ResourceTable({
     <table className="table">
       <thead>
         <tr>
+          {onToggleSelect && <th style={{ width: 28 }} />}
           <th>이름</th>
           <th>Cluster IP</th>
           <th>External IP</th>
@@ -414,7 +442,22 @@ function ResourceTable({
       </thead>
       <tbody>
         {rows.map((r) => (
-          <tr key={r.name}>
+          <tr key={r.name} className="table-row-clickable" onClick={() => onRowClick?.(r.name)}>
+            {onToggleSelect && (
+              <td onClick={(e) => e.stopPropagation()}>
+                {r.createdByPortal ? (
+                  <input
+                    type="checkbox"
+                    checked={selected?.has(r.name) || false}
+                    onChange={() => onToggleSelect(r.name)}
+                  />
+                ) : (
+                  <span className="hint" title="이 포탈에서 생성한 Load Balancer만 삭제할 수 있습니다.">
+                    —
+                  </span>
+                )}
+              </td>
+            )}
             <td className="mono">{r.name}</td>
             <td className="mono">{r.clusterIP || "—"}</td>
             <td className="mono">{(r.externalIps || []).join(", ") || "—"}</td>
@@ -449,6 +492,18 @@ export default function ProjectsPage({ orgId, projectId, projects = [] }) {
   const [selectedVmGroupNames, setSelectedVmGroupNames] = useState(new Set());
   const [deletingGroups, setDeletingGroups] = useState(false);
   const [groupDeleteError, setGroupDeleteError] = useState(null);
+
+  const [showCreateCluster, setShowCreateCluster] = useState(false);
+  const [editClusterName, setEditClusterName] = useState(null);
+  const [selectedClusterNames, setSelectedClusterNames] = useState(new Set());
+  const [deletingClusters, setDeletingClusters] = useState(false);
+  const [clusterDeleteError, setClusterDeleteError] = useState(null);
+
+  const [showCreateLb, setShowCreateLb] = useState(false);
+  const [editLbName, setEditLbName] = useState(null);
+  const [selectedLbNames, setSelectedLbNames] = useState(new Set());
+  const [deletingLbs, setDeletingLbs] = useState(false);
+  const [lbDeleteError, setLbDeleteError] = useState(null);
 
   const [hideVksNodes, setHideVksNodes] = useState(false);
   const [menuOpenFor, setMenuOpenFor] = useState(null);
@@ -545,6 +600,11 @@ export default function ProjectsPage({ orgId, projectId, projects = [] }) {
     setDeleteError(null);
     setSelectedVmGroupNames(new Set());
     setGroupDeleteError(null);
+    setSelectedClusterNames(new Set());
+    setClusterDeleteError(null);
+    setSelectedLbNames(new Set());
+    setLbDeleteError(null);
+    setMenuOpenFor(null);
   }, [namespaceName, tab]);
 
   const toggleVmSelection = (name) => {
@@ -615,6 +675,76 @@ export default function ProjectsPage({ orgId, projectId, projects = [] }) {
     setSelectedVmGroupNames(new Set());
     setResourceRefreshKey((k) => k + 1);
     if (failures.length > 0) setGroupDeleteError(failures.join(" / "));
+  };
+
+  const toggleClusterSelection = (name) => {
+    setSelectedClusterNames((prev) => {
+      const next = new Set(prev);
+      if (next.has(name)) next.delete(name);
+      else next.add(name);
+      return next;
+    });
+  };
+
+  const toggleLbSelection = (name) => {
+    setSelectedLbNames((prev) => {
+      const next = new Set(prev);
+      if (next.has(name)) next.delete(name);
+      else next.add(name);
+      return next;
+    });
+  };
+
+  const handleDeleteSelectedClusters = async () => {
+    const names = [...selectedClusterNames];
+    if (names.length === 0) return;
+    if (
+      !window.confirm(
+        `선택한 Kubernetes 클러스터 ${names.length}개를 삭제하시겠습니까? 이 작업은 되돌릴 수 없습니다.\n\n${names.join(", ")}`
+      )
+    ) {
+      return;
+    }
+    setDeletingClusters(true);
+    setClusterDeleteError(null);
+    const failures = [];
+    for (const name of names) {
+      try {
+        await api.deleteKubernetesCluster(orgId, projectId, namespaceName, name);
+      } catch (e) {
+        failures.push(`${name}: ${e.message}`);
+      }
+    }
+    setDeletingClusters(false);
+    setSelectedClusterNames(new Set());
+    setResourceRefreshKey((k) => k + 1);
+    if (failures.length > 0) setClusterDeleteError(failures.join(" / "));
+  };
+
+  const handleDeleteSelectedLbs = async () => {
+    const names = [...selectedLbNames];
+    if (names.length === 0) return;
+    if (
+      !window.confirm(
+        `선택한 Load Balancer ${names.length}개를 삭제하시겠습니까? 이 작업은 되돌릴 수 없습니다.\n\n${names.join(", ")}`
+      )
+    ) {
+      return;
+    }
+    setDeletingLbs(true);
+    setLbDeleteError(null);
+    const failures = [];
+    for (const name of names) {
+      try {
+        await api.deleteLoadBalancer(orgId, projectId, namespaceName, name);
+      } catch (e) {
+        failures.push(`${name}: ${e.message}`);
+      }
+    }
+    setDeletingLbs(false);
+    setSelectedLbNames(new Set());
+    setResourceRefreshKey((k) => k + 1);
+    if (failures.length > 0) setLbDeleteError(failures.join(" / "));
   };
 
   if (!orgId) {
@@ -763,6 +893,66 @@ export default function ProjectsPage({ orgId, projectId, projects = [] }) {
               </div>
             )}
 
+            {tab === "kubernetes" && (
+              <div className="tab-content-toolbar">
+                <button className="btn" onClick={() => setResourceRefreshKey((k) => k + 1)}>
+                  새로고침
+                </button>
+                <button
+                  className="btn btn-danger"
+                  onClick={handleDeleteSelectedClusters}
+                  disabled={selectedClusterNames.size === 0 || deletingClusters}
+                >
+                  {deletingClusters ? "삭제 중…" : `삭제 (${selectedClusterNames.size})`}
+                </button>
+                <button className="btn btn-primary" onClick={() => setShowCreateCluster(true)}>
+                  + 생성
+                </button>
+              </div>
+            )}
+
+            {tab === "kubernetes" && clusterDeleteError && (
+              <div className="hint" style={{ color: "var(--accent-red)", marginBottom: 10 }}>
+                삭제 실패: {clusterDeleteError}
+              </div>
+            )}
+
+            {tab === "kubernetes" && (
+              <div className="hint" style={{ marginBottom: 10, display: "block" }}>
+                행을 클릭하면 Control Plane/Worker Replica 수를 수정할 수 있습니다.
+              </div>
+            )}
+
+            {tab === "loadbalancer" && (
+              <div className="tab-content-toolbar">
+                <button className="btn" onClick={() => setResourceRefreshKey((k) => k + 1)}>
+                  새로고침
+                </button>
+                <button
+                  className="btn btn-danger"
+                  onClick={handleDeleteSelectedLbs}
+                  disabled={selectedLbNames.size === 0 || deletingLbs}
+                >
+                  {deletingLbs ? "삭제 중…" : `삭제 (${selectedLbNames.size})`}
+                </button>
+                <button className="btn btn-primary" onClick={() => setShowCreateLb(true)}>
+                  + 생성
+                </button>
+              </div>
+            )}
+
+            {tab === "loadbalancer" && lbDeleteError && (
+              <div className="hint" style={{ color: "var(--accent-red)", marginBottom: 10 }}>
+                삭제 실패: {lbDeleteError}
+              </div>
+            )}
+
+            {tab === "loadbalancer" && (
+              <div className="hint" style={{ marginBottom: 10, display: "block" }}>
+                행을 클릭하면 Selector/포트를 수정할 수 있습니다.
+              </div>
+            )}
+
             {tab !== "overview" && loadingResources && (
               <div className="empty-state">불러오는 중…</div>
             )}
@@ -778,12 +968,24 @@ export default function ProjectsPage({ orgId, projectId, projects = [] }) {
               <ResourceTable
                 kind={tab}
                 rows={displayedResources}
-                onRowClick={tab === "vmservice" ? setSelectedVmName : undefined}
+                onRowClick={
+                  tab === "vmservice"
+                    ? setSelectedVmName
+                    : tab === "kubernetes"
+                    ? setEditClusterName
+                    : tab === "loadbalancer"
+                    ? setEditLbName
+                    : undefined
+                }
                 selected={
                   tab === "vmservice"
                     ? selectedVmNames
                     : tab === "vmgroup"
                     ? selectedVmGroupNames
+                    : tab === "kubernetes"
+                    ? selectedClusterNames
+                    : tab === "loadbalancer"
+                    ? selectedLbNames
                     : undefined
                 }
                 onToggleSelect={
@@ -791,6 +993,10 @@ export default function ProjectsPage({ orgId, projectId, projects = [] }) {
                     ? toggleVmSelection
                     : tab === "vmgroup"
                     ? toggleVmGroupSelection
+                    : tab === "kubernetes"
+                    ? toggleClusterSelection
+                    : tab === "loadbalancer"
+                    ? toggleLbSelection
                     : undefined
                 }
                 menuOpenFor={tab === "vmservice" ? menuOpenFor : undefined}
@@ -841,6 +1047,49 @@ export default function ProjectsPage({ orgId, projectId, projects = [] }) {
           namespace={namespaceName}
           onClose={() => setShowCreateVmGroup(false)}
           onCreated={() => setResourceRefreshKey((k) => k + 1)}
+        />
+      )}
+
+      {showCreateCluster && (
+        <CreateKubernetesClusterDrawer
+          orgId={orgId}
+          projectId={projectId}
+          namespace={namespaceName}
+          namespaceInfo={selectedNamespace}
+          onClose={() => setShowCreateCluster(false)}
+          onCreated={() => setResourceRefreshKey((k) => k + 1)}
+        />
+      )}
+
+      {editClusterName && (
+        <EditKubernetesClusterDrawer
+          orgId={orgId}
+          projectId={projectId}
+          namespace={namespaceName}
+          clusterName={editClusterName}
+          onClose={() => setEditClusterName(null)}
+          onUpdated={() => setResourceRefreshKey((k) => k + 1)}
+        />
+      )}
+
+      {showCreateLb && (
+        <CreateLoadBalancerDrawer
+          orgId={orgId}
+          projectId={projectId}
+          namespace={namespaceName}
+          onClose={() => setShowCreateLb(false)}
+          onCreated={() => setResourceRefreshKey((k) => k + 1)}
+        />
+      )}
+
+      {editLbName && (
+        <EditLoadBalancerDrawer
+          orgId={orgId}
+          projectId={projectId}
+          namespace={namespaceName}
+          serviceName={editLbName}
+          onClose={() => setEditLbName(null)}
+          onUpdated={() => setResourceRefreshKey((k) => k + 1)}
         />
       )}
     </div>

@@ -8,13 +8,19 @@ import websockets
 import yaml
 from fastapi import APIRouter, Depends, HTTPException, WebSocket, WebSocketDisconnect
 from fastapi.responses import Response
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 from sqlmodel import Session, select
 
 from app import console_relay
 from app.config import settings
 from app.db import get_session
-from app.models import Organization, PortalVirtualMachine, PortalVmGroup
+from app.models import (
+    Organization,
+    PortalKubernetesCluster,
+    PortalLoadBalancer,
+    PortalVirtualMachine,
+    PortalVmGroup,
+)
 from app.vcf_client import VcfAutomationError, vcf_client
 
 logger = logging.getLogger(__name__)
@@ -57,6 +63,28 @@ def _portal_vm_group_names(org_id: str, project: str, namespace: str, session: S
         )
     ).all()
     return {r.group_name for r in rows}
+
+
+def _portal_cluster_names(org_id: str, project: str, namespace: str, session: Session) -> set[str]:
+    rows = session.exec(
+        select(PortalKubernetesCluster).where(
+            PortalKubernetesCluster.org_id == org_id,
+            PortalKubernetesCluster.project == project,
+            PortalKubernetesCluster.namespace == namespace,
+        )
+    ).all()
+    return {r.cluster_name for r in rows}
+
+
+def _portal_load_balancer_names(org_id: str, project: str, namespace: str, session: Session) -> set[str]:
+    rows = session.exec(
+        select(PortalLoadBalancer).where(
+            PortalLoadBalancer.org_id == org_id,
+            PortalLoadBalancer.project == project,
+            PortalLoadBalancer.namespace == namespace,
+        )
+    ).all()
+    return {r.service_name for r in rows}
 
 
 @router.get("")
@@ -105,6 +133,14 @@ def namespace_resources(
             item["createdByPortal"] = item.get("name") in portal_names
     elif kind == "vmgroup":
         portal_names = _portal_vm_group_names(org_id, project, namespace, session)
+        for item in items:
+            item["createdByPortal"] = item.get("name") in portal_names
+    elif kind == "kubernetes":
+        portal_names = _portal_cluster_names(org_id, project, namespace, session)
+        for item in items:
+            item["createdByPortal"] = item.get("name") in portal_names
+    elif kind == "loadbalancer":
+        portal_names = _portal_load_balancer_names(org_id, project, namespace, session)
         for item in items:
             item["createdByPortal"] = item.get("name") in portal_names
 
@@ -465,6 +501,281 @@ def delete_vm_group(
     try:
         endpoint = _namespace_endpoint(org_name, project, namespace)
         vcf_client.delete_namespace_vm_group(org_name, endpoint, namespace, group_name)
+    except VcfAutomationError as exc:
+        raise HTTPException(status_code=502, detail=str(exc)) from exc
+    session.delete(record)
+    session.commit()
+    return {"ok": True}
+
+
+# ----------------------------------------------------------------------
+# Kubernetes (VKS cluster) tab
+# ----------------------------------------------------------------------
+class CreateKubernetesClusterRequest(BaseModel):
+    name: str
+    clusterClass: str
+    clusterClassNamespace: str
+    kubernetesVersion: str
+    controlPlaneReplicas: int = 1
+    workerClass: str
+    workerReplicas: int = 1
+    workerName: Optional[str] = None
+    vmClass: str
+    storageClass: str
+    networkSubnetSet: Optional[str] = None
+
+
+class WorkerPoolUpdate(BaseModel):
+    name: str
+    class_: Optional[str] = Field(default=None, alias="class")
+    replicas: int
+
+
+class UpdateKubernetesClusterRequest(BaseModel):
+    controlPlaneReplicas: Optional[int] = None
+    workers: Optional[list[WorkerPoolUpdate]] = None
+
+
+@router.get("/{org_id}/{project}/namespaces/{namespace}/cluster-classes")
+def list_cluster_classes(
+    org_id: str, project: str, namespace: str, session: Session = Depends(get_session)
+):
+    org_name = _org_name(org_id, session)
+    try:
+        endpoint = _namespace_endpoint(org_name, project, namespace)
+        return vcf_client.list_namespace_cluster_classes(org_name, endpoint, namespace)
+    except VcfAutomationError as exc:
+        raise HTTPException(status_code=502, detail=str(exc)) from exc
+
+
+@router.get("/{org_id}/{project}/namespaces/{namespace}/subnet-sets")
+def list_subnet_sets(org_id: str, project: str, namespace: str, session: Session = Depends(get_session)):
+    org_name = _org_name(org_id, session)
+    try:
+        endpoint = _namespace_endpoint(org_name, project, namespace)
+        return vcf_client.list_namespace_subnet_sets(org_name, endpoint, namespace)
+    except VcfAutomationError as exc:
+        raise HTTPException(status_code=502, detail=str(exc)) from exc
+
+
+@router.get("/{org_id}/{project}/namespaces/{namespace}/kubernetes-versions")
+def list_kubernetes_versions(
+    org_id: str, project: str, namespace: str, session: Session = Depends(get_session)
+):
+    org_name = _org_name(org_id, session)
+    try:
+        endpoint = _namespace_endpoint(org_name, project, namespace)
+        return vcf_client.list_kubernetes_versions(org_name, endpoint)
+    except VcfAutomationError as exc:
+        raise HTTPException(status_code=502, detail=str(exc)) from exc
+
+
+@router.post("/{org_id}/{project}/namespaces/{namespace}/kubernetes")
+def create_kubernetes_cluster(
+    org_id: str,
+    project: str,
+    namespace: str,
+    body: CreateKubernetesClusterRequest,
+    session: Session = Depends(get_session),
+):
+    org_name = _org_name(org_id, session)
+    try:
+        endpoint = _namespace_endpoint(org_name, project, namespace)
+        result = vcf_client.create_namespace_kubernetes_cluster(
+            org_name,
+            endpoint,
+            namespace,
+            body.name,
+            body.clusterClass,
+            body.clusterClassNamespace,
+            body.kubernetesVersion,
+            body.controlPlaneReplicas,
+            body.workerClass,
+            body.workerReplicas,
+            body.vmClass,
+            body.storageClass,
+            worker_name=body.workerName or "md-0",
+            network_subnet_set=body.networkSubnetSet,
+        )
+    except VcfAutomationError as exc:
+        raise HTTPException(status_code=502, detail=str(exc)) from exc
+
+    session.add(
+        PortalKubernetesCluster(org_id=org_id, project=project, namespace=namespace, cluster_name=body.name)
+    )
+    session.commit()
+    return result
+
+
+@router.get("/{org_id}/{project}/namespaces/{namespace}/kubernetes/{name}")
+def get_kubernetes_cluster(
+    org_id: str, project: str, namespace: str, name: str, session: Session = Depends(get_session)
+):
+    org_name = _org_name(org_id, session)
+    try:
+        endpoint = _namespace_endpoint(org_name, project, namespace)
+        return vcf_client.get_namespace_kubernetes_cluster(org_name, endpoint, namespace, name)
+    except VcfAutomationError as exc:
+        raise HTTPException(status_code=502, detail=str(exc)) from exc
+
+
+@router.patch("/{org_id}/{project}/namespaces/{namespace}/kubernetes/{name}")
+def update_kubernetes_cluster(
+    org_id: str,
+    project: str,
+    namespace: str,
+    name: str,
+    body: UpdateKubernetesClusterRequest,
+    session: Session = Depends(get_session),
+):
+    # Scaling an existing cluster's control-plane/worker replicas is allowed
+    # regardless of who created it (unlike delete below) - low-risk,
+    # reversible, and the common case is scaling a cluster provisioned
+    # outside this portal.
+    org_name = _org_name(org_id, session)
+    try:
+        endpoint = _namespace_endpoint(org_name, project, namespace)
+        return vcf_client.update_namespace_kubernetes_cluster(
+            org_name,
+            endpoint,
+            namespace,
+            name,
+            control_plane_replicas=body.controlPlaneReplicas,
+            workers=[w.model_dump(by_alias=True) for w in body.workers]
+            if body.workers is not None
+            else None,
+        )
+    except VcfAutomationError as exc:
+        raise HTTPException(status_code=502, detail=str(exc)) from exc
+
+
+@router.delete("/{org_id}/{project}/namespaces/{namespace}/kubernetes/{name}")
+def delete_kubernetes_cluster(
+    org_id: str, project: str, namespace: str, name: str, session: Session = Depends(get_session)
+):
+    org_name = _org_name(org_id, session)
+    record = session.exec(
+        select(PortalKubernetesCluster).where(
+            PortalKubernetesCluster.org_id == org_id,
+            PortalKubernetesCluster.project == project,
+            PortalKubernetesCluster.namespace == namespace,
+            PortalKubernetesCluster.cluster_name == name,
+        )
+    ).first()
+    if not record:
+        raise HTTPException(
+            status_code=403,
+            detail="이 포탈에서 생성한 Kubernetes 클러스터만 삭제할 수 있습니다.",
+        )
+    try:
+        endpoint = _namespace_endpoint(org_name, project, namespace)
+        vcf_client.delete_namespace_kubernetes_cluster(org_name, endpoint, namespace, name)
+    except VcfAutomationError as exc:
+        raise HTTPException(status_code=502, detail=str(exc)) from exc
+    session.delete(record)
+    session.commit()
+    return {"ok": True}
+
+
+# ----------------------------------------------------------------------
+# Load Balancer tab (Service, type=LoadBalancer)
+# ----------------------------------------------------------------------
+class ServicePortInput(BaseModel):
+    name: Optional[str] = None
+    port: int
+    targetPort: Optional[int] = None
+    protocol: str = "TCP"
+
+
+class CreateLoadBalancerRequest(BaseModel):
+    name: str
+    selector: dict[str, str] = {}
+    ports: list[ServicePortInput]
+
+
+class UpdateLoadBalancerRequest(BaseModel):
+    selector: dict[str, str] = {}
+    ports: list[ServicePortInput]
+
+
+@router.post("/{org_id}/{project}/namespaces/{namespace}/loadbalancer")
+def create_load_balancer(
+    org_id: str,
+    project: str,
+    namespace: str,
+    body: CreateLoadBalancerRequest,
+    session: Session = Depends(get_session),
+):
+    org_name = _org_name(org_id, session)
+    try:
+        endpoint = _namespace_endpoint(org_name, project, namespace)
+        result = vcf_client.create_namespace_load_balancer(
+            org_name, endpoint, namespace, body.name, body.selector, [p.model_dump() for p in body.ports]
+        )
+    except VcfAutomationError as exc:
+        raise HTTPException(status_code=502, detail=str(exc)) from exc
+
+    session.add(
+        PortalLoadBalancer(org_id=org_id, project=project, namespace=namespace, service_name=body.name)
+    )
+    session.commit()
+    return result
+
+
+@router.get("/{org_id}/{project}/namespaces/{namespace}/loadbalancer/{name}")
+def get_load_balancer(
+    org_id: str, project: str, namespace: str, name: str, session: Session = Depends(get_session)
+):
+    org_name = _org_name(org_id, session)
+    try:
+        endpoint = _namespace_endpoint(org_name, project, namespace)
+        return vcf_client.get_namespace_load_balancer(org_name, endpoint, namespace, name)
+    except VcfAutomationError as exc:
+        raise HTTPException(status_code=502, detail=str(exc)) from exc
+
+
+@router.patch("/{org_id}/{project}/namespaces/{namespace}/loadbalancer/{name}")
+def update_load_balancer(
+    org_id: str,
+    project: str,
+    namespace: str,
+    name: str,
+    body: UpdateLoadBalancerRequest,
+    session: Session = Depends(get_session),
+):
+    # Allowed for any Service in the namespace, not just portal-created ones
+    # (same rationale as the Kubernetes cluster scaling endpoint above).
+    org_name = _org_name(org_id, session)
+    try:
+        endpoint = _namespace_endpoint(org_name, project, namespace)
+        return vcf_client.update_namespace_load_balancer(
+            org_name, endpoint, namespace, name, body.selector, [p.model_dump() for p in body.ports]
+        )
+    except VcfAutomationError as exc:
+        raise HTTPException(status_code=502, detail=str(exc)) from exc
+
+
+@router.delete("/{org_id}/{project}/namespaces/{namespace}/loadbalancer/{name}")
+def delete_load_balancer(
+    org_id: str, project: str, namespace: str, name: str, session: Session = Depends(get_session)
+):
+    org_name = _org_name(org_id, session)
+    record = session.exec(
+        select(PortalLoadBalancer).where(
+            PortalLoadBalancer.org_id == org_id,
+            PortalLoadBalancer.project == project,
+            PortalLoadBalancer.namespace == namespace,
+            PortalLoadBalancer.service_name == name,
+        )
+    ).first()
+    if not record:
+        raise HTTPException(
+            status_code=403,
+            detail="이 포탈에서 생성한 Load Balancer만 삭제할 수 있습니다.",
+        )
+    try:
+        endpoint = _namespace_endpoint(org_name, project, namespace)
+        vcf_client.delete_namespace_load_balancer(org_name, endpoint, namespace, name)
     except VcfAutomationError as exc:
         raise HTTPException(status_code=502, detail=str(exc)) from exc
     session.delete(record)
