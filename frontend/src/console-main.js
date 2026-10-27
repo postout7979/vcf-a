@@ -33,21 +33,31 @@ function loadStylesheet(href) {
   document.head.appendChild(el);
 }
 
-// The ticket this console connects over is short-lived - measured across
-// six live sessions, every single one closed with a clean WS code 1000 at
-// 22.0-22.15s after connecting, which is far too consistent to be network
-// variance; it's a deliberate, server-enforced session cap (not something
-// a client-side request parameter appears able to change - tried several
-// ttl/expiration field name guesses on the ticket-creation API, all were
-// accepted but the response never echoes spec back to confirm either
-// way). Rather than wait for it to die and show a visible gap while
-// fetching the next ticket, proactively fetch a fresh one and swap to it
-// a few seconds before the known cutoff - the DISCONNECTED handler below
-// is still the fallback for whenever that doesn't land in time.
+// The ticket this console connects over is short-lived. Confirmed live
+// with the proactive renewal disabled (so nothing was masking the real
+// behavior): the server closes the WebSocket with a clean code 1000 at a
+// hard 21.1-21.2s after connecting, every single time, regardless of
+// actual traffic, and with zero advance warning - this gateway doesn't
+// send the WMKS protocol's own heartbeat/session-close-reason/reconnect-
+// token messages, which would otherwise let a client see this coming.
+// Tried several ttl/expiration field name guesses on the ticket-creation
+// API too; all were accepted but none changed the measured cutoff. Rather
+// than wait for it to die and show a visible gap while fetching the next
+// ticket, proactively fetch one ahead of time and swap to it a few
+// seconds before the known cutoff - the DISCONNECTED handler below is
+// still the fallback for whenever that doesn't land in time.
 const canRefetchTicket = Boolean(orgId && projectId && namespace && vmName);
 let reconnectAttempts = 0;
 const MAX_RECONNECT_ATTEMPTS = 40;
-const SESSION_RENEW_MS = 18000;
+// Stays well clear of the measured 21.1-21.2s cutoff (see above).
+const SESSION_RENEW_MS = 17000;
+// wmks.min.js never clears the canvas on its own, so the last rendered
+// frame already stays on screen through a reconnect with zero code needed
+// for that. What *is* avoidable is the network/API latency of fetching a
+// fresh ticket - do that a few seconds ahead of the actual swap so the
+// swap itself is just wmks.connect(), cutting the input-dead gap down to
+// roughly the new connection's own handshake time.
+const PREFETCH_LEAD_MS = 3000;
 
 async function fetchFreshTicket() {
   const path =
@@ -75,10 +85,13 @@ async function main() {
 
   // VCF Automation's own "Open Console" feature uses this exact client
   // (VMware's WMKS SDK, confirmed via a live browser capture of its
-  // console.log output and page source) - it speaks a VMware-specific
-  // wire protocol, not plain RFB/VNC, which is why a generic client like
-  // noVNC can't hold a session here (the gateway errors out the moment a
-  // standard RFB client sends SetPixelFormat/SetEncodings). Proxied
+  // console.log output and page source). The wire protocol itself turned
+  // out to be standard RFB after all (a raw client capture reads the
+  // "RFB 003.008" banner) with VMware-specific message types layered on
+  // top (msgVMWSrvMessage_* - heartbeat, session-close-with-reason,
+  // reconnect-token, ...) - noVNC still can't hold a session here because
+  // it has no idea what to do with those vendor messages, not because the
+  // base protocol differs. Proxied
   // through this backend (see wmks_asset in routers/projects.py) so the
   // browser only has to trust this portal's own certificate.
   const assetBase = `/api/projects/${encodeURIComponent(orgId)}/wmks-assets`;
@@ -105,11 +118,30 @@ async function main() {
   let wasConnected = false;
   let renewing = false;
   let renewTimer = null;
+  let prefetchTimer = null;
+  let prefetchedUrl = null;
 
   const clearRenewTimer = () => {
     if (renewTimer) {
       clearTimeout(renewTimer);
       renewTimer = null;
+    }
+    if (prefetchTimer) {
+      clearTimeout(prefetchTimer);
+      prefetchTimer = null;
+    }
+    prefetchedUrl = null;
+  };
+
+  // Fetched ahead of the actual swap (see PREFETCH_LEAD_MS) so the
+  // network/API round-trip happens while the current connection is still
+  // live and usable, instead of adding to the input-dead gap at swap time.
+  const prefetchFreshTicket = async () => {
+    try {
+      prefetchedUrl = await fetchFreshTicket();
+    } catch (_e) {
+      // Swallow it here - swapToFreshTicket falls back to fetching inline
+      // (and surfaces the error then) if prefetchedUrl never lands.
     }
   };
 
@@ -122,7 +154,8 @@ async function main() {
     renewing = true;
     if (!silent) setStatus("세션 갱신 중...");
     try {
-      wsUrl = await fetchFreshTicket();
+      wsUrl = prefetchedUrl || (await fetchFreshTicket());
+      prefetchedUrl = null;
       wmks.connect(wsUrl);
     } catch (e) {
       renewing = false;
@@ -142,10 +175,15 @@ async function main() {
         setStatus(vmName ? `연결됨 - ${vmName}` : "연결됨", "connected");
         btnCad.style.display = "";
         btnFullscreen.style.display = "";
-        // Proactively renew a few seconds before the observed ~22s cutoff
+        // Proactively renew well before the confirmed ~21.1-21.2s cutoff
         // so the swap happens in the background, invisibly, instead of
-        // waiting for a hard disconnect and visible gap.
+        // waiting for a hard disconnect and visible gap; the ticket itself
+        // is fetched a few seconds earlier still (prefetchTimer) so that
+        // network latency isn't part of the input-dead gap at swap time.
         clearRenewTimer();
+        if (canRefetchTicket) {
+          prefetchTimer = setTimeout(prefetchFreshTicket, SESSION_RENEW_MS - PREFETCH_LEAD_MS);
+        }
         renewTimer = setTimeout(() => swapToFreshTicket(true), SESSION_RENEW_MS);
         break;
       case WMKS.CONST.ConnectionState.DISCONNECTED:
